@@ -12,7 +12,7 @@ The v0.1 behavior contract and runtime compatibility still need agreement and in
 
 ## Development
 
-Use Node **24 LTS** for the development tooling:
+Use Node **26** for the development tooling:
 
 ```sh
 npm ci --ignore-scripts

@@ -10,7 +10,7 @@ Use a focused feature branch and a reviewable pull request. Do not push directly
 
 ## Setup and checks
 
-Node 24 LTS and npm are sufficient for the foundations:
+Use Node 26 and npm for the foundations:
 
 ```sh
 npm ci --ignore-scripts
