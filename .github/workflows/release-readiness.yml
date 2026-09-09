@@ -17,14 +17,13 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
-          node-version: '24'
+          node-version: '26'
           package-manager-cache: false
       - run: npm ci --ignore-scripts
       - run: npm run check
       # Deliberately fails until an implemented package is release-ready.
       - run: npm run check:release
       - run: npm pack --ignore-scripts
-      # actions/upload-artifact v4
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: candidate-package

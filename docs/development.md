@@ -2,7 +2,9 @@
 
 ## Foundation tooling
 
-Use Node 24 LTS and npm. `.nvmrc` records the development major; it is not a compatibility promise for the future extension. `package-lock.json` pins the dependency graph.
+Use Node 26 and npm. `.nvmrc` records the development major, and `@types/node` follows that major. These are not compatibility promises for the future extension. `package-lock.json` pins the dependency graph.
+
+CI also exercises Node 24 as an additional compatibility check; it is not the development baseline or a declared extension runtime minimum.
 
 ```sh
 npm ci --ignore-scripts
