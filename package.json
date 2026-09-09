@@ -1,0 +1,44 @@
+{
+  "name": "pi-watch",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A Pi extension for durable, owner-scoped background commands. Not yet implemented or released.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/freezscholte/pi-watch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/freezscholte/pi-watch/issues"
+  },
+  "homepage": "https://github.com/freezscholte/pi-watch#readme",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "background-tasks"
+  ],
+  "files": [
+    "dist/",
+    "CHANGELOG.md"
+  ],
+  "pi": {
+    "extensions": []
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "test": "node --test tests/*.test.ts",
+    "check:package": "node scripts/check-package.ts",
+    "check:release": "node scripts/check-package.ts --release",
+    "check": "npm run typecheck && biome check . && npm test && npm run check:package",
+    "prepublishOnly": "npm run check && npm run check:release"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.12",
+    "@types/node": "24.13.3",
+    "typescript": "6.0.3"
+  }
+}
