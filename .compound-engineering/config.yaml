@@ -1,0 +1,2 @@
+# Shared artifact root; model and engine preferences remain local.
+docs_root: docs

@@ -1,0 +1,24 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+*.tgz
+.DS_Store
+
+# Machine-local Pi/CE configuration, sessions, and developer tooling.
+/.pi/
+/.compound-engineering/config.local.yaml
+/.pi-lens.json
+/.firecrawl/
+**/subagent-artifacts/
+
+# Never commit credentials or command/job runtime data.
+.npmrc
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log
