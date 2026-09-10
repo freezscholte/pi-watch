@@ -27,6 +27,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.ts",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",

@@ -8,6 +8,7 @@ The U1 store requires Node 26.x and linked SQLite >=3.51.3. CI also exercises No
 
 ```sh
 npm ci --ignore-scripts
+npm run build
 npm run check
 ```
 
@@ -15,7 +16,7 @@ Checks include strict TypeScript, Biome formatting/linting, Node tests and inspe
 
 The formatter and type checker intentionally exclude historical `spikes/` and research. Those materials remain local pending separate publication review and are not prerequisites for these checks. Do not use an experiment's environment-specific runtime path as a package dependency strategy.
 
-There is no product build or extension-load smoke test yet because no extension is implemented. Later slices must add compiled entries and build tests, declare actual Pi imports as wildcard peer dependencies as required by Pi's package contract, verify the runtime/OS matrix, and load a packed package in an isolated Pi environment. Do not load a developer's normal sessions, credentials or unrelated extensions during automated tests.
+The product build emits the TypeScript store foundation as ESM JavaScript under `dist/`; the build test checks its relative imports and an isolated compiled store-worker smoke. This does not establish extension loading, command lifecycle, or Pi integration. Later slices must add compiled extension entries, declare actual Pi imports as wildcard peer dependencies as required by Pi's package contract, verify the runtime/OS matrix, and load a packed package in an isolated Pi environment. Do not load a developer's normal sessions, credentials or unrelated extensions during automated tests.
 
 ## Compound Engineering workflow
 
