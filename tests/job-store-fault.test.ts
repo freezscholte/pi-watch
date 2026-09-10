@@ -196,7 +196,9 @@ test('fault sensitivity: raising the child file cap permits the same claim commi
 }, () => {
   const seeded = createSeededStore('claim_runner');
   try {
-    const run = runLimitedFault(seeded, 'claim_runner', 1024);
+    // `/bin/sh` ulimit -f units are 512 bytes on Linux and 1024 bytes on
+    // macOS; keep this bounded cap above the seeded WAL on both platforms.
+    const run = runLimitedFault(seeded, 'claim_runner', 8192);
     assert.equal(run.exitCode, 0, run.stderr);
     assert.equal(run.outcome.nativeFault, null);
     assert.equal(run.outcome.mapped, null);
