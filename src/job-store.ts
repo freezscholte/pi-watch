@@ -59,7 +59,7 @@ import {
   validateEvidenceInput,
 } from './store-evidence.ts';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 const ENGINE_FLOOR = '3.51.3';
 export type RequestNamespace = 'tool_call' | 'explicit';
 
@@ -130,6 +130,31 @@ export interface NoticeRecord {
  * snapshot after reopening without guessing claim/counter values. This read
  * grants no execution authority.
  */
+export type LaunchDecision =
+  | 'authorized'
+  | 'suppressed_cancelled'
+  | 'suppressed_deadline';
+
+export interface JobControlSnapshot {
+  cancellationRequestedAtMs: number | null;
+  launchDecision: LaunchDecision | null;
+  decidedAtMs: number | null;
+}
+
+export interface CancellationResult {
+  disposition: 'recorded' | 'already_recorded' | 'already_terminal';
+  control: JobControlSnapshot;
+}
+
+export interface LaunchDecisionResult {
+  disposition:
+    | 'authorized_now'
+    | 'suppressed_now'
+    | 'already_decided'
+    | 'precluded';
+  control: JobControlSnapshot;
+}
+
 export interface JobObservation {
   job: JobRecord;
   claimId: string | null;
@@ -137,6 +162,8 @@ export interface JobObservation {
   latestRevision: number;
   finalized: boolean;
   evidence: ExecutionEvidence;
+  /** Durable control state; this snapshot grants no execution authority. */
+  control: JobControlSnapshot;
 }
 
 export interface StaleWitnessInput {
@@ -174,6 +201,13 @@ export interface JobStore {
   getJob(ownerUuid: string, jobId: string): JobRecord;
   listJobs(ownerUuid: string): JobRecord[];
   observeJob(ownerUuid: string, jobId: string): JobObservation;
+  requestCancellation(ownerUuid: string, jobId: string): CancellationResult;
+  decideLaunch(
+    ownerUuid: string,
+    jobId: string,
+    claimId: string,
+    runnerToken: string | null,
+  ): LaunchDecisionResult;
   claimRunner(
     ownerUuid: string,
     jobId: string,
@@ -229,6 +263,16 @@ CREATE TABLE jobs (
   UNIQUE (owner_uuid, request_namespace, request_key)
 );
 CREATE INDEX jobs_owner_idx ON jobs (owner_uuid, creation_ordinal);
+CREATE TABLE job_control (
+  job_id TEXT PRIMARY KEY REFERENCES jobs(job_id),
+  cancellation_requested_at_ms INTEGER,
+  launch_decision TEXT CHECK (launch_decision IN ('authorized', 'suppressed_cancelled', 'suppressed_deadline')),
+  decided_at_ms INTEGER,
+  CHECK (
+    (launch_decision IS NULL AND decided_at_ms IS NULL) OR
+    (launch_decision IS NOT NULL AND decided_at_ms IS NOT NULL)
+  )
+);
 CREATE TABLE job_claims (
   job_id TEXT PRIMARY KEY REFERENCES jobs(job_id),
   claim_id TEXT NOT NULL UNIQUE,
@@ -800,6 +844,72 @@ function rowToJob(row: JobRow): JobRecord {
   };
 }
 
+interface ControlRow {
+  cancellation_requested_at_ms: number | null;
+  launch_decision: string | null;
+  decided_at_ms: number | null;
+}
+
+function rowToControl(row: ControlRow | undefined): JobControlSnapshot {
+  if (row === undefined) {
+    throw new StoreError(
+      'STORE_CORRUPT',
+      'Store control state is missing or unsupported.',
+    );
+  }
+  const decision = row.launch_decision;
+  if (
+    decision !== null &&
+    decision !== 'authorized' &&
+    decision !== 'suppressed_cancelled' &&
+    decision !== 'suppressed_deadline'
+  ) {
+    throw new StoreError(
+      'STORE_CORRUPT',
+      'Store control state is missing or unsupported.',
+    );
+  }
+  if ((decision === null) !== (row.decided_at_ms === null)) {
+    throw new StoreError(
+      'STORE_CORRUPT',
+      'Store control state is missing or unsupported.',
+    );
+  }
+  return {
+    cancellationRequestedAtMs: row.cancellation_requested_at_ms,
+    launchDecision: decision,
+    decidedAtMs: row.decided_at_ms,
+  };
+}
+
+function isInitialEvidenceOnly(row: ResultRow | undefined): boolean {
+  if (row === undefined) return true;
+  if (row.finalized === 1) return false;
+  const evidence = rowToEvidence(row);
+  // Revision uncertainty is a publication-state flag, not an observed fact.
+  // Compare each fact explicitly so a raw non-final row with uncertain=0 is
+  // still eligible, while every execution/capture/cleanup trigger remains a
+  // veto.
+  return (
+    evidence.launch === 'unknown' &&
+    evidence.shellCode === null &&
+    evidence.shellSignal === null &&
+    evidence.cleanupState === 'not_requested' &&
+    evidence.cleanupTermObservation === null &&
+    !evidence.cleanupKillIntentObserved &&
+    !evidence.cancellationIntentObserved &&
+    !evidence.deadlineTriggerObserved &&
+    evidence.stdout.available === null &&
+    !evidence.stdout.truncated &&
+    !evidence.stdout.incomplete &&
+    !evidence.stdout.openAtCutover &&
+    evidence.stderr.available === null &&
+    !evidence.stderr.truncated &&
+    !evidence.stderr.incomplete &&
+    !evidence.stderr.openAtCutover
+  );
+}
+
 interface ResultRow {
   revision: number;
   launch: string;
@@ -1247,6 +1357,17 @@ export function createJobStore(
         .get(jobId) as ResultRow | undefined;
     }
 
+    function getControlSnapshot(jobId: string): JobControlSnapshot {
+      return rowToControl(
+        db
+          .prepare(
+            `SELECT cancellation_requested_at_ms, launch_decision, decided_at_ms
+                 FROM job_control WHERE job_id = ?`,
+          )
+          .get(jobId) as ControlRow | undefined,
+      );
+    }
+
     const store: JobStore = {
       reserve(input) {
         const ownerUuid = validateOwnerUuid(input.ownerUuid);
@@ -1322,6 +1443,11 @@ export function createJobStore(
               acceptedAtMs,
               acceptedAtMs + deadlineMs,
             );
+            // Control state is part of the reservation transaction. A job
+            // without it is corrupt, never an invitation to synthesize a grant.
+            db.prepare(`INSERT INTO job_control (job_id) VALUES (?)`).run(
+              candidateJobId,
+            );
             return {
               created: true,
               job: rowToJob(getJobRow(candidateJobId) as JobRow),
@@ -1359,6 +1485,7 @@ export function createJobStore(
             | { claim_id: string; heartbeat_counter: number }
             | undefined;
           const latest = latestResultRow(job.job_id);
+          const control = getControlSnapshot(job.job_id);
           return {
             job: rowToJob(job),
             claimId: claim?.claim_id ?? null,
@@ -1367,6 +1494,117 @@ export function createJobStore(
             finalized: latest?.finalized === 1,
             evidence:
               latest === undefined ? initialEvidence() : rowToEvidence(latest),
+            control,
+          };
+        });
+      },
+
+      requestCancellation(ownerUuid, jobId) {
+        const owner = validateOwnerUuid(ownerUuid);
+        return inTransaction('request_cancellation', () => {
+          const job = getJobRow(jobId, owner);
+          const control = getControlSnapshot(job.job_id);
+          const latest = latestResultRow(job.job_id);
+          if (job.state === 'settled' || latest?.finalized === 1) {
+            return { disposition: 'already_terminal' as const, control };
+          }
+          if (control.cancellationRequestedAtMs !== null) {
+            return { disposition: 'already_recorded' as const, control };
+          }
+          const requestedAtMs = now();
+          db.prepare(
+            `UPDATE job_control SET cancellation_requested_at_ms = ? WHERE job_id = ?`,
+          ).run(requestedAtMs, job.job_id);
+          return {
+            disposition: 'recorded' as const,
+            control: { ...control, cancellationRequestedAtMs: requestedAtMs },
+          };
+        });
+      },
+
+      decideLaunch(ownerUuid, jobId, claimId, runnerToken) {
+        const owner = validateOwnerUuid(ownerUuid);
+        const claim = validateClaimId(claimId);
+        return inTransaction('decide_launch', () => {
+          const job = getJobRow(jobId, owner);
+          assertRunnerToken(job, runnerToken);
+          const durableClaim = db
+            .prepare(`SELECT claim_id FROM job_claims WHERE job_id = ?`)
+            .get(job.job_id) as { claim_id: string } | undefined;
+          if (durableClaim === undefined || durableClaim.claim_id !== claim) {
+            throw new StoreError(
+              'CLAIM_TAKEN',
+              'Launch decision requires the matching durable runner claim.',
+            );
+          }
+          const control = getControlSnapshot(job.job_id);
+          if (control.launchDecision !== null) {
+            return { disposition: 'already_decided' as const, control };
+          }
+          const latest = latestResultRow(job.job_id);
+          if (job.state === 'settled' || !isInitialEvidenceOnly(latest)) {
+            return { disposition: 'precluded' as const, control };
+          }
+          const decisionAtMs = now();
+          const suppressed =
+            control.cancellationRequestedAtMs !== null
+              ? 'suppressed_cancelled'
+              : decisionAtMs >= job.deadline_at_ms
+                ? 'suppressed_deadline'
+                : null;
+          if (suppressed === null) {
+            db.prepare(
+              `UPDATE job_control SET launch_decision = 'authorized', decided_at_ms = ? WHERE job_id = ?`,
+            ).run(decisionAtMs, job.job_id);
+            return {
+              disposition: 'authorized_now' as const,
+              control: {
+                ...control,
+                launchDecision: 'authorized' as const,
+                decidedAtMs: decisionAtMs,
+              },
+            };
+          }
+          const priorEvidence =
+            latest === undefined ? initialEvidence() : rowToEvidence(latest);
+          const merged = mergeEvidence(
+            priorEvidence,
+            {
+              launch: suppressed,
+              cleanupState: 'not_required',
+              cancellationIntentObserved: suppressed === 'suppressed_cancelled',
+              deadlineTriggerObserved: suppressed === 'suppressed_deadline',
+              finalized: true,
+            },
+            { uncertain: false, finalized: true },
+          );
+          const revision = (latest?.revision ?? 0) + 1;
+          const publishedAtMs = decisionAtMs;
+          db.prepare(
+            `UPDATE job_control SET launch_decision = ?, decided_at_ms = ? WHERE job_id = ?`,
+          ).run(suppressed, decisionAtMs, job.job_id);
+          db.prepare(
+            `INSERT INTO job_results (job_id, ${RESULT_COLUMNS.replace(/\s+/g, ' ')})
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(
+            job.job_id,
+            revision,
+            ...evidenceToParams(merged),
+            publishedAtMs,
+          );
+          db.prepare(
+            `INSERT INTO job_notices (job_id, revision, owner_uuid, pending) VALUES (?, ?, ?, 1)`,
+          ).run(job.job_id, revision, job.owner_uuid);
+          db.prepare(`UPDATE jobs SET state = 'settled' WHERE job_id = ?`).run(
+            job.job_id,
+          );
+          return {
+            disposition: 'suppressed_now' as const,
+            control: {
+              ...control,
+              launchDecision: suppressed,
+              decidedAtMs: decisionAtMs,
+            },
           };
         });
       },

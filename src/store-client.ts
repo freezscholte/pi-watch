@@ -8,9 +8,11 @@
  */
 import { Worker } from 'node:worker_threads';
 import {
+  type CancellationResult,
   checkRuntimeSupport,
   type JobObservation,
   type JobRecord,
+  type LaunchDecisionResult,
   type NoticeRecord,
   type ReservationInput,
   type ReservationResult,
@@ -32,8 +34,10 @@ import type {
 } from './store-worker.ts';
 
 export type {
+  CancellationResult,
   JobObservation,
   JobRecord,
+  LaunchDecisionResult,
   NoticeRecord,
   ReservationResult,
   ResultRecord,
@@ -45,6 +49,16 @@ export interface StoreClient {
   getJob(ownerUuid: string, jobId: string): Promise<JobRecord>;
   listJobs(ownerUuid: string): Promise<JobRecord[]>;
   observeJob(ownerUuid: string, jobId: string): Promise<JobObservation>;
+  requestCancellation(
+    ownerUuid: string,
+    jobId: string,
+  ): Promise<CancellationResult>;
+  decideLaunch(
+    ownerUuid: string,
+    jobId: string,
+    claimId: string,
+    runnerToken: string | null,
+  ): Promise<LaunchDecisionResult>;
   claimRunner(
     ownerUuid: string,
     jobId: string,
@@ -94,6 +108,7 @@ export interface StoreClient {
 
 type Pending = {
   candidateJobId: string | undefined;
+  unknownOnWorkerLoss: boolean;
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
 };
@@ -162,9 +177,11 @@ export async function openStoreClient(
     workerFailed = { code: error.code };
     for (const entry of pending.values()) {
       entry.reject(
-        entry.candidateJobId === undefined
-          ? error
-          : new AmbiguousAcceptanceError(entry.candidateJobId),
+        entry.candidateJobId !== undefined
+          ? new AmbiguousAcceptanceError(entry.candidateJobId)
+          : entry.unknownOnWorkerLoss
+            ? new StoreWriteError('unknown')
+            : error,
       );
     }
     pending.clear();
@@ -351,6 +368,7 @@ export async function openStoreClient(
     op: string,
     payload: unknown,
     candidateJobId?: string,
+    unknownOnWorkerLoss = false,
   ): Promise<T> {
     if (workerFailed !== null) {
       return Promise.reject(
@@ -363,6 +381,7 @@ export async function openStoreClient(
         resolve: resolve as (value: unknown) => void,
         reject,
         candidateJobId,
+        unknownOnWorkerLoss,
       });
       try {
         worker.postMessage({ id, op, payload });
@@ -392,6 +411,20 @@ export async function openStoreClient(
     listJobs: (ownerUuid) => request<JobRecord[]>('list_jobs', { ownerUuid }),
     observeJob: (ownerUuid, jobId) =>
       request<JobObservation>('observe_job', { ownerUuid, jobId }),
+    requestCancellation: (ownerUuid, jobId) =>
+      request<CancellationResult>(
+        'request_cancellation',
+        { ownerUuid, jobId },
+        undefined,
+        true,
+      ),
+    decideLaunch: (ownerUuid, jobId, claimId, runnerToken) =>
+      request<LaunchDecisionResult>(
+        'decide_launch',
+        { ownerUuid, jobId, claimId, runnerToken },
+        undefined,
+        true,
+      ),
     claimRunner: (ownerUuid, jobId, claimId, runnerToken) =>
       request<RunnerClaim>('claim_runner', {
         ownerUuid,

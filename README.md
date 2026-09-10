@@ -23,6 +23,7 @@ TypeScript checks types; **Biome** formats and lints; Node's test runner exercis
 
 - [U1 storage contract and validation limits](docs/u1-storage.md)
 - [U1 asynchronous worker and runtime checks](docs/u1-worker.md)
+- [U2 launch control and development schema 2](docs/u2-launch-control.md)
 - [Contributing](CONTRIBUTING.md)
 - [Development and Compound Engineering workflow](docs/development.md)
 - [Release process and first-publication gates](docs/releases.md)

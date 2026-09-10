@@ -134,6 +134,22 @@ export function runStoreWorker(
       const p = payloadOf(payload);
       return store.observeJob(p.ownerUuid as string, p.jobId as string);
     },
+    request_cancellation: (payload) => {
+      const p = payloadOf(payload);
+      return store.requestCancellation(
+        p.ownerUuid as string,
+        p.jobId as string,
+      );
+    },
+    decide_launch: (payload) => {
+      const p = payloadOf(payload);
+      return store.decideLaunch(
+        p.ownerUuid as string,
+        p.jobId as string,
+        p.claimId as string,
+        p.runnerToken as string | null,
+      );
+    },
     acknowledge_notice: (payload) => {
       const p = payloadOf(payload);
       store.acknowledgeNotice(

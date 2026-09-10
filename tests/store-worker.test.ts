@@ -9,6 +9,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -24,7 +25,7 @@ import {
   type JobObservation,
   type ReservationInput,
 } from '../src/job-store.ts';
-import { StoreError, toDiagnostic } from '../src/job-types.ts';
+import { StoreError, StoreWriteError, toDiagnostic } from '../src/job-types.ts';
 import { openStoreClient } from '../src/store-client.ts';
 import {
   runStoreWorker,
@@ -89,6 +90,7 @@ interface ActorOutcome {
   created?: boolean;
   jobId?: string;
   revision?: number;
+  disposition?: string;
 }
 
 interface ActorHandle {
@@ -332,6 +334,207 @@ test('the async client reserves and reads owner-scoped records through the worke
     assert.equal(published.evidence.finalized, true);
   } finally {
     await client.close();
+  }
+});
+
+test('the async worker preserves durable cancellation and one-time suppression control', {
+  skip: runtimeSkip,
+}, async () => {
+  const dir = tempDir('u2-worker-control-');
+  const client = await openStoreClient(dbPath(dir), { trustedRoot: dir });
+  try {
+    const created = await client.reserve(
+      reservationInput({ requestKey: 'worker-control' }),
+    );
+    const recorded = await client.requestCancellation(OWNER, created.job.jobId);
+    assert.equal(recorded.disposition, 'recorded');
+    const claim = await client.claimRunner(
+      OWNER,
+      created.job.jobId,
+      'worker-control-claim',
+      created.runnerToken,
+    );
+    const decision = await client.decideLaunch(
+      OWNER,
+      created.job.jobId,
+      claim.claimId,
+      created.runnerToken,
+    );
+    assert.equal(decision.disposition, 'suppressed_now');
+    assert.equal(decision.control.launchDecision, 'suppressed_cancelled');
+    const observation = await client.observeJob(OWNER, created.job.jobId);
+    assert.equal(observation.control.launchDecision, 'suppressed_cancelled');
+    assert.equal(observation.finalized, true);
+  } finally {
+    await client.close();
+  }
+});
+
+test('two real store actors race one launch decision to one authorization', {
+  skip: runtimeSkip,
+}, async () => {
+  const dir = tempDir('u2-control-race-');
+  const db = dbPath(dir);
+  const seed = createJobStore(db, { trustedRoot: dir });
+  const created = seed.reserve(
+    reservationInput({ requestKey: 'control-race' }),
+  );
+  seed.claimRunner(OWNER, created.job.jobId, 'race-claim', created.runnerToken);
+  seed.close();
+  const first = spawnActor(
+    [
+      'decide',
+      '--db',
+      db,
+      '--job',
+      created.job.jobId,
+      '--claim',
+      'race-claim',
+      '--runner-token',
+      created.runnerToken ?? '',
+    ],
+    dir,
+  );
+  const second = spawnActor(
+    [
+      'decide',
+      '--db',
+      db,
+      '--job',
+      created.job.jobId,
+      '--claim',
+      'race-claim',
+      '--runner-token',
+      created.runnerToken ?? '',
+    ],
+    dir,
+  );
+  const closed = Promise.all(
+    [first, second].map(
+      ({ child }) =>
+        new Promise<void>((resolve) => child.once('close', () => resolve())),
+    ),
+  );
+  try {
+    const outcomes = await bounded(
+      Promise.all([first.result, second.result]),
+      20_000,
+    );
+    await bounded(closed, 5_000);
+    for (const actor of [first, second]) {
+      assert.equal(actor.child.exitCode, 0);
+      assert.equal(actor.child.signalCode, null);
+    }
+    assert.ok(outcomes.every((outcome) => outcome.status === 'ok'));
+    assert.deepEqual(outcomes.map((outcome) => outcome.disposition).sort(), [
+      'already_decided',
+      'authorized_now',
+    ]);
+  } finally {
+    first.expire();
+    second.expire();
+    await bounded(closed, 5_000);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('actual control-worker response loss is unknown after committed cancellation and decision', {
+  skip: runtimeSkip,
+}, async () => {
+  for (const operation of ['request_cancellation', 'decide_launch'] as const) {
+    const dir = tempDir(`u2-worker-control-loss-${operation}-`);
+    const db = dbPath(dir);
+    const seed = createJobStore(db, { trustedRoot: dir });
+    const created = seed.reserve(
+      reservationInput({ requestKey: `loss-${operation}` }),
+    );
+    if (operation === 'decide_launch') {
+      seed.claimRunner(
+        OWNER,
+        created.job.jobId,
+        'loss-claim',
+        created.runnerToken,
+      );
+    }
+    seed.close();
+    let worker: Worker | undefined;
+    try {
+      const client = await bounded(
+        openStoreClient(db, {
+          trustedRoot: dir,
+          startupWorkerUrl: new URL(
+            './fixtures/control-worker.ts',
+            import.meta.url,
+          ),
+          onStartupWorker: (original) => {
+            worker = original;
+          },
+        }),
+        10_000,
+      );
+      try {
+        const invoke = (jobId: string): Promise<unknown> =>
+          operation === 'request_cancellation'
+            ? client.requestCancellation(OWNER, jobId)
+            : client.decideLaunch(
+                OWNER,
+                jobId,
+                'loss-claim',
+                created.runnerToken,
+              );
+        // A clone failure occurs before handoff, not after an uncertain write.
+        await assert.rejects(
+          bounded(invoke((() => {}) as unknown as string), 10_000),
+          (error: unknown) =>
+            error instanceof StoreError &&
+            !(error instanceof StoreWriteError) &&
+            error.code === 'VALIDATION_FAILED',
+        );
+        await assert.rejects(
+          bounded(invoke(created.job.jobId), 10_000),
+          (error: unknown) =>
+            error instanceof StoreWriteError &&
+            error.commitOutcome === 'unknown' &&
+            !('disposition' in error),
+        );
+        // Once the original worker has exited, no new call was handed off.
+        await assert.rejects(
+          bounded(invoke(created.job.jobId), 10_000),
+          (error: unknown) =>
+            error instanceof StoreError &&
+            !(error instanceof StoreWriteError) &&
+            error.code === 'STORE_UNAVAILABLE',
+        );
+      } finally {
+        await bounded(client.close(), 5_000);
+      }
+      const reopened = createJobStore(db, { trustedRoot: dir });
+      try {
+        const observation = reopened.observeJob(OWNER, created.job.jobId);
+        if (operation === 'request_cancellation') {
+          assert.notEqual(observation.control.cancellationRequestedAtMs, null);
+        } else {
+          assert.equal(observation.control.launchDecision, 'authorized');
+          assert.equal(
+            reopened.decideLaunch(
+              OWNER,
+              created.job.jobId,
+              'loss-claim',
+              created.runnerToken,
+            ).disposition,
+            'already_decided',
+          );
+        }
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      if (worker !== undefined && worker.threadId !== -1) {
+        await bounded(worker.terminate(), 5_000);
+      }
+      // No removal if original-worker termination was not confirmed above.
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 

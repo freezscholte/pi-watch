@@ -157,6 +157,71 @@ test('an isolated emitted store client uses its default compiled worker and clos
   }
 });
 
+test('the compiled default worker exposes durable control operations', {
+  skip: runtimeSkip,
+}, () => {
+  const isolated = mkdtempSync(join(tmpdir(), 'pi-watch-compiled-control-'));
+  const caller = mkdtempSync(
+    join(tmpdir(), 'pi-watch-compiled-control-caller-'),
+  );
+  try {
+    cpSync(dist, join(isolated, 'dist'), { recursive: true });
+    writeFileSync(join(isolated, 'package.json'), '{"type":"module"}\n');
+    const moduleUrl = pathToFileURL(
+      join(isolated, 'dist/store-client.js'),
+    ).href;
+    const trustedRoot = join(isolated, 'state');
+    mkdirSync(trustedRoot, { mode: 0o700 });
+    const dbPath = join(trustedRoot, 'watch', 'v1', 'jobs.sqlite');
+    const script = `
+      import { openStoreClient } from ${JSON.stringify(moduleUrl)};
+      const ownerUuid = '11111111-2222-4333-8444-555555555555';
+      const client = await openStoreClient(${JSON.stringify(dbPath)}, {
+        trustedRoot: ${JSON.stringify(trustedRoot)}
+      });
+      const reservation = await client.reserve({
+        ownerUuid,
+        sessionPath: '/synthetic/compiled-control.jsonl',
+        namespace: 'tool_call',
+        requestKey: 'compiled-control',
+        command: 'printf compiled-control',
+        cwd: '/synthetic/cwd'
+      });
+      const cancellation = await client.requestCancellation(ownerUuid, reservation.job.jobId);
+      const claim = await client.claimRunner(ownerUuid, reservation.job.jobId, 'compiled-control-claim', reservation.runnerToken);
+      const decision = await client.decideLaunch(ownerUuid, reservation.job.jobId, claim.claimId, reservation.runnerToken);
+      const observation = await client.observeJob(ownerUuid, reservation.job.jobId);
+      console.log(JSON.stringify({
+        cancellation: cancellation.disposition,
+        decision: decision.disposition,
+        launchDecision: observation.control.launchDecision,
+        finalized: observation.finalized
+      }));
+      await client.close();
+    `;
+    const fixture = join(caller, 'compiled-control.mjs');
+    writeFileSync(fixture, script);
+    const result = spawnSync(process.execPath, [fixture], {
+      cwd: caller,
+      encoding: 'utf8',
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const report = JSON.parse(result.stdout.trim().split('\n').at(-1) ?? '');
+    assert.deepEqual(report, {
+      cancellation: 'recorded',
+      decision: 'suppressed_now',
+      launchDecision: 'suppressed_cancelled',
+      finalized: true,
+    });
+  } finally {
+    rmSync(isolated, { recursive: true, force: true });
+    rmSync(caller, { recursive: true, force: true });
+  }
+});
+
 test('a missing emitted worker fails promptly without a live orphan or path leak', {
   skip: runtimeSkip,
 }, () => {
