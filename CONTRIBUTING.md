@@ -10,7 +10,7 @@ Use a focused feature branch and a reviewable pull request. Do not push directly
 
 ## Setup and checks
 
-Use Node 26 and npm for the foundations:
+Use Node 26 and npm:
 
 ```sh
 npm ci --ignore-scripts
@@ -19,7 +19,7 @@ npm run format
 npm run lint
 ```
 
-`npm run format` writes formatting changes; inspect the diff afterward. Biome deliberately excludes historical research, spikes and local Pi configuration. TypeScript checks new development scripts/tests independently. Add production source to those checks when implementation starts.
+`npm run format` writes formatting changes; inspect the diff afterward. Biome deliberately excludes historical research, spikes and local Pi configuration. TypeScript checks production source, tests and development scripts. Reinstall from the lockfile after dependency updates; do not rely on stale local compiler or type packages.
 
 Keep the lockfile in sync with intentional dependency changes. Prefer built-in APIs and a small dependency set. Never bypass package-age, signature or audit safeguards silently. Do not run dependency lifecycle scripts without reviewing why they are needed.
 

@@ -2,9 +2,9 @@
 
 ## Foundation tooling
 
-Use Node 26 and npm. `.nvmrc` records the development major, and `@types/node` follows that major. These are not compatibility promises for the future extension. `package-lock.json` pins the dependency graph.
+Use Node 26 and npm. `.nvmrc` records the development major, and `@types/node` follows that major. `package-lock.json` pins the dependency graph. Run `npm ci --ignore-scripts` after dependency updates; a passing check with stale installed packages is not verification of the locked toolchain.
 
-CI also exercises Node 24 as an additional compatibility check; it is not the development baseline or a declared extension runtime minimum.
+The U1 store requires Node 26.x and linked SQLite >=3.51.3. CI also exercises Node 24 for foundation checks and actual unsupported-runtime rejection; it is not a supported store runtime. See [worker validation](u1-worker.md) for the explicit alternate-runtime test option.
 
 ```sh
 npm ci --ignore-scripts
@@ -15,7 +15,7 @@ Checks include strict TypeScript, Biome formatting/linting, Node tests and inspe
 
 The formatter and type checker intentionally exclude historical `spikes/` and research. Those materials remain local pending separate publication review and are not prerequisites for these checks. Do not use an experiment's environment-specific runtime path as a package dependency strategy.
 
-There is no product build or extension-load smoke test yet because no extension is implemented. When that slice starts, add source/build tests, declare actual Pi imports as wildcard peer dependencies as required by Pi's package contract, choose supported runtime/OS versions, and verify a packed package in an isolated Pi environment. Do not load a developer's normal sessions, credentials or unrelated extensions during automated tests.
+There is no product build or extension-load smoke test yet because no extension is implemented. Later slices must add compiled entries and build tests, declare actual Pi imports as wildcard peer dependencies as required by Pi's package contract, verify the runtime/OS matrix, and load a packed package in an isolated Pi environment. Do not load a developer's normal sessions, credentials or unrelated extensions during automated tests.
 
 ## Compound Engineering workflow
 
@@ -39,4 +39,4 @@ Do not copy third-party/private tracker source or account-specific model setting
 
 ## Current work boundary
 
-The foundation slice covers repository/package metadata, license, contribution/security/release policies, local CE conventions, dependency locking and CI. It does **not** implement a task runner, choose a production SQLite binding, raise the extension's minimum Node version, or publish anything. Next comes a small, explicitly agreed v0.1 behavior contract.
+[U1 storage](u1-storage.md) and its [asynchronous worker](u1-worker.md) are implemented with built-in `node:sqlite`. Production source, tests and development scripts are typechecked. Command execution, Pi tools/delivery, governed lifecycle validation and packaged installation remain later work. The package stays private at version `0.0.0`; no publication or installation guarantee follows from the storage tests.
