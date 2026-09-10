@@ -2,13 +2,13 @@
 
 A small Pi extension for durable, owner-scoped background commands.
 
-**Status: pre-release development.** SQLite and TypeScript are the selected direction. This repository establishes development foundations—not a working extension. Research and disposable experiments remain local pending separate publication review. No package has been published.
+**Status: pre-release development.** The internal owner-scoped SQLite storage and worker foundation is implemented and locally tested. Command execution and Pi integration are not implemented, so this is not yet a working extension. Research and disposable experiments remain local. No package has been published.
 
 ## Intended first iteration
 
 Finite background commands with durable status/output, bounded execution, cancellation, and completion routed to the owning Pi session. No daemon, scheduler, PostgreSQL backend, or general orchestration framework.
 
-The v0.1 behavior contract and runtime compatibility still need agreement and integration testing. Local experiments do not establish production guarantees.
+The selected runtime is Node 26.x with linked SQLite 3.51.3 or newer. Real command, Pi and platform integration testing remains ahead; local storage tests do not establish those lifecycle guarantees.
 
 ## Development
 
@@ -19,8 +19,10 @@ npm ci --ignore-scripts
 npm run check
 ```
 
-TypeScript checks types; **Biome** formats and lints; Node's test runner exercises the package policy. These tooling requirements do not yet define the extension's supported runtime range. The production SQLite binding and patched-engine requirement remain implementation decisions.
+TypeScript checks types; **Biome** formats and lints; Node's test runner exercises storage, ownership, worker failures and package policy. The store uses built-in `node:sqlite` and checks the actual linked engine before opening disk state.
 
+- [U1 storage contract and validation limits](docs/u1-storage.md)
+- [U1 asynchronous worker and runtime checks](docs/u1-worker.md)
 - [Contributing](CONTRIBUTING.md)
 - [Development and Compound Engineering workflow](docs/development.md)
 - [Release process and first-publication gates](docs/releases.md)
