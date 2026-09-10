@@ -127,7 +127,7 @@ const STARTUP_CLEANUP_TIMEOUT_MS = 1_000;
 export interface StoreClientOptions {
   /** Mandatory trusted anchor directory (finding #3, approved modified-A decision). */
   trustedRoot: string;
-  /** Test-only startup worker URL; production always uses store-worker.ts. */
+  /** Test-only startup worker URL; production resolves the matching source/build entry. */
   startupWorkerUrl?: URL;
   /** Test-only startup timeout override. */
   startupTimeoutMs?: number;
@@ -172,19 +172,23 @@ export async function openStoreClient(
 
   const startupTimeoutMs =
     options.startupTimeoutMs ?? WORKER_TERMINATION_TIMEOUT_MS;
-  const worker = new Worker(
-    options.startupWorkerUrl ?? new URL('./store-worker.ts', import.meta.url),
-    {
-      workerData: {
-        dbPath,
-        trustedRoot: options.trustedRoot,
-        startupMode: options.startupWorkerMode,
-      },
-      // The store worker must never keep the host alive on its own.
-      stdout: true,
-      stderr: true,
-    },
+  const sourceUrl = new URL(import.meta.url);
+  const defaultWorkerUrl = new URL(
+    sourceUrl.pathname.endsWith('.ts')
+      ? './store-worker.ts'
+      : './store-worker.js',
+    sourceUrl,
   );
+  const worker = new Worker(options.startupWorkerUrl ?? defaultWorkerUrl, {
+    workerData: {
+      dbPath,
+      trustedRoot: options.trustedRoot,
+      startupMode: options.startupWorkerMode,
+    },
+    // The store worker must never keep the host alive on its own.
+    stdout: true,
+    stderr: true,
+  });
   worker.unref();
 
   let startupSettled = false;
