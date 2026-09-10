@@ -371,7 +371,7 @@ function assertBusyWrite(attempt: WriterAttempt, point: string): void {
   assert.equal(attempt.errcode, 5, `${point}: ${attempt.output}`);
 }
 
-test('W3 WAL newer live fixture witnesses main v1 and WAL v999 before refusal', {
+test('W3 WAL newer live fixture witnesses main v2 and WAL v999 before refusal', {
   skip: runtimeSkip,
 }, async () => {
   const dir = tempDir('u1-w3-wal-live-newer-');
@@ -386,7 +386,7 @@ test('W3 WAL newer live fixture witnesses main v1 and WAL v999 before refusal', 
     assert.ok(existsSync(`${database}-wal`));
     assert.ok(existsSync(`${database}-shm`));
     assert.ok(statSync(`${database}-wal`).size > 0);
-    assert.equal(checkpointedMainVersion(database, dir), '1');
+    assert.equal(checkpointedMainVersion(database, dir), '2');
     const normal = new DatabaseSync(database, { readOnly: true });
     const liveVersion = (
       normal
@@ -511,7 +511,7 @@ test('W3 missing SHM after owned fixture reap still reads committed newer WAL st
     terminal = await stopActor(actor);
     assert.equal(terminal.closeObserved, true);
     assert.equal(actor.child.signalCode, 'SIGKILL');
-    assert.equal(checkpointedMainVersion(database, dir), '1');
+    assert.equal(checkpointedMainVersion(database, dir), '2');
     rmSync(`${database}-shm`, { force: true });
     assert.equal(existsSync(`${database}-shm`), false);
     expectTooNew(() => openStore(dir), dir);
@@ -831,7 +831,7 @@ test('W3 WAL snapshot remains coherent while independent writer upgrades after m
   try {
     expectTooNew(() => openStore(dir), dir);
     assert.equal(injected, true);
-    assert.equal(roVersion, '1');
+    assert.equal(roVersion, '2');
     assertSubprocessCompleted(
       writerResult ?? {
         ok: false,

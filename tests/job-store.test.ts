@@ -3331,7 +3331,7 @@ test('(W3 correction) canonical schema rejects BLOB metadata without reserving a
   const before = new DatabaseSync(dbPath(dir));
   try {
     before
-      .prepare("UPDATE meta SET value = X'01' WHERE key = 'schema_version'")
+      .prepare("UPDATE meta SET value = X'02' WHERE key = 'schema_version'")
       .run();
     snapshot = {
       schema: before

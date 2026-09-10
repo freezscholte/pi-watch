@@ -49,6 +49,7 @@ interface ActorOptions {
   counter: number;
   shellCode: number;
   jobId: string;
+  runnerToken: string;
   observedClaim: string;
   observedCounter: number;
   observedRevision: number;
@@ -69,6 +70,7 @@ const DEFAULTS: ActorOptions = {
   counter: 0,
   shellCode: 0,
   jobId: '',
+  runnerToken: '',
   observedClaim: 'claim-1',
   observedCounter: 0,
   observedRevision: 0,
@@ -132,6 +134,9 @@ function parseArgs(argv: string[]): { mode: string; options: ActorOptions } {
         break;
       case 'job':
         options.jobId = value;
+        break;
+      case 'runner-token':
+        options.runnerToken = value;
         break;
       default:
         break;
@@ -263,6 +268,22 @@ function run(): void {
     const result = reserveWithRetry();
     emit({ status: 'ok', created: result.created, jobId: result.jobId });
     blockUntil(holdDeadline); // stay alive for the parent to kill; bounded
+    store.close();
+    return;
+  }
+
+  if (mode === 'decide') {
+    const decision = store.decideLaunch(
+      options.owner,
+      options.jobId,
+      options.claimId,
+      options.runnerToken,
+    );
+    emit({
+      status: 'ok',
+      disposition: decision.disposition,
+      launchDecision: decision.control.launchDecision,
+    });
     store.close();
     return;
   }
