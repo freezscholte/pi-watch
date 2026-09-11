@@ -16,7 +16,7 @@ Checks include strict TypeScript, Biome formatting/linting, Node tests and inspe
 
 The formatter and type checker intentionally exclude historical `spikes/` and research. Those materials remain local pending separate publication review and are not prerequisites for these checks. Do not use an experiment's environment-specific runtime path as a package dependency strategy.
 
-The product build emits the TypeScript store foundation as ESM JavaScript under `dist/`; the build test checks its relative imports and an isolated compiled store-worker smoke. This does not establish extension loading, command lifecycle, or Pi integration. Later slices must add compiled extension entries, declare actual Pi imports as wildcard peer dependencies as required by Pi's package contract, verify the runtime/OS matrix, and load a packed package in an isolated Pi environment. Do not load a developer's normal sessions, credentials or unrelated extensions during automated tests.
+The product build emits the TypeScript store and U2 launch actors as ESM JavaScript under `dist/`; the build test checks its relative imports and isolated compiled-worker smoke. The [U2 launch contract](u2-launch.md) describes the runner/guardian boundary. This does not establish extension loading or Pi integration. Later slices must add compiled extension entries, declare actual Pi imports as wildcard peer dependencies as required by Pi's package contract, verify the runtime/OS matrix, and load a packed package in an isolated Pi environment. Do not load a developer's normal sessions, credentials or unrelated extensions during automated tests.
 
 ## Compound Engineering workflow
 
@@ -40,4 +40,4 @@ Do not copy third-party/private tracker source or account-specific model setting
 
 ## Current work boundary
 
-[U1 storage](u1-storage.md) and its [asynchronous worker](u1-worker.md) are implemented with built-in `node:sqlite`. Production source, tests and development scripts are typechecked. Command execution, Pi tools/delivery, governed lifecycle validation and packaged installation remain later work. The package stays private at version `0.0.0`; no publication or installation guarantee follows from the storage tests.
+[U1 storage](u1-storage.md), its [asynchronous worker](u1-worker.md), and the internal U2-W3 reserved-command launch skeleton ([launch contract](u2-launch.md)) are implemented with built-in `node:sqlite`. Production source, tests and development scripts are typechecked. Pi-facing tools/delivery, governed lifecycle integration and packaged installation remain later work. The package stays private at version `0.0.0`; no publication or installation guarantee follows from the internal lifecycle tests.

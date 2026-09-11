@@ -12,7 +12,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { before, test } from 'node:test';
+import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkRuntimeSupport } from '../src/job-store.ts';
 
@@ -36,16 +36,6 @@ const unsupportedNode =
   process.env.PI_WATCH_UNSUPPORTED_NODE ??
   (runtimeSupported ? undefined : process.execPath);
 
-before(() => {
-  const result = spawnSync(
-    process.execPath,
-    [npmCli, '--ignore-scripts', 'run', 'build'],
-    { cwd: root, encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 },
-  );
-  assert.equal(result.error, undefined);
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-});
-
 test('the build emits only the production ESM closure with rewritten imports', () => {
   const expectedJavaScript = [
     'job-store.js',
@@ -54,6 +44,12 @@ test('the build emits only the production ESM closure with rewritten imports', (
     'store-client.js',
     'store-evidence.js',
     'store-worker.js',
+    'launch.js',
+    'runner.js',
+    'guardian.js',
+    'guardian-protocol.js',
+    'process-control.js',
+    'test-seams.js',
   ];
   const entries = readdirSync(dist).sort();
   assert.deepEqual(

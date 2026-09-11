@@ -31,7 +31,7 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
-    "test": "node --test tests/*.test.ts",
+    "test": "node scripts/build.ts && node --test --test-timeout=60000 tests/*.test.ts",
     "check:package": "node scripts/check-package.ts",
     "check:release": "node scripts/check-package.ts --release",
     "check": "npm run typecheck && biome check . && npm test && npm run check:package",
