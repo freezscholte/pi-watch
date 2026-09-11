@@ -11,9 +11,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { utilityPaths } from '../src/test-seams.ts';
 
 const root = join(process.cwd(), 'dist');
 const guardian = join(root, 'guardian.js');
+const utilities = utilityPaths();
 function processExists(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -89,8 +91,8 @@ test('guardian rejects early, duplicate, and late grants but launches once', {
       command: `printf x >> ${marker}`,
       cwd: dir,
       deadlineAtMs: Date.now() + 20_000,
-      psPath: '/bin/ps',
-      shPath: '/bin/sh',
+      psPath: utilities.ps,
+      shPath: utilities.sh,
     });
     await waitMessage('topology');
     child.send({ type: 'grant' });
@@ -161,7 +163,7 @@ read line <&3
       cwd: dir,
       deadlineAtMs: Date.now() + 10_000,
       psPath: ps,
-      shPath: '/bin/sh',
+      shPath: utilities.sh,
     });
     const end = Date.now() + 5_000;
     while (!existsSync(probeLog) && Date.now() < end)
@@ -218,8 +220,8 @@ test('guardian does not launch before grant', { timeout: 10_000 }, async () => {
       command: `printf x >> ${join(dir, 'marker')}`,
       cwd: dir,
       deadlineAtMs: Date.now() + 10_000,
-      psPath: '/bin/ps',
-      shPath: '/bin/sh',
+      psPath: utilities.ps,
+      shPath: utilities.sh,
     });
     assert.equal((await topology).type, 'topology');
     const exited = new Promise<void>((resolve) =>

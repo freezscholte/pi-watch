@@ -4,12 +4,12 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkRuntimeSupport, type ReservationResult } from './job-store.ts';
 import type { StoreClient } from './store-client.ts';
+import { internalSeams } from './test-seams.ts';
 
 export interface LaunchRunnerOptions {
   dbPath: string;
   trustedRoot: string;
   runnerEntry?: string;
-  executable?: string;
 }
 
 export class LaunchError extends Error {
@@ -51,7 +51,7 @@ export async function launchRunner(
     throw new LaunchError();
   }
   const entry = options.runnerEntry ?? defaultRunnerEntry();
-  const executable = options.executable ?? process.execPath;
+  const executable = internalSeams().runnerExecutable ?? process.execPath;
   return new Promise<LaunchReceipt>((resolveReceipt) => {
     let settled = false;
     let child: ChildProcess;

@@ -2,11 +2,13 @@ import { appendFileSync, existsSync } from 'node:fs';
 import { StoreWriteError } from './job-types.ts';
 
 export interface InternalSeams {
+  runnerExecutable: string | undefined;
   guardianPath: string | undefined;
   shPath: string | undefined;
   psPath: string | undefined;
   pauseBeforeDecide: boolean;
   pauseAfterAuthorized: boolean;
+  pauseAfterAuthorizedMs: number;
   pauseControllerAfterLaunch: boolean;
   disconnectBeforeGrantSend: boolean;
   decisionFailure: 'before' | 'after' | undefined;
@@ -19,12 +21,20 @@ export interface InternalSeams {
 export function internalSeams(
   env: NodeJS.ProcessEnv = process.env,
 ): InternalSeams {
+  const pauseAfterAuthorizedMs = Number(
+    env.PI_WATCH_TEST_PAUSE_AFTER_AUTHORIZED_MS ?? 0,
+  );
   return {
+    runnerExecutable: env.PI_WATCH_TEST_RUNNER_EXECUTABLE,
     guardianPath: env.PI_WATCH_TEST_GUARDIAN_PATH,
     shPath: env.PI_WATCH_TEST_SH_PATH,
     psPath: env.PI_WATCH_TEST_PS_PATH,
     pauseBeforeDecide: env.PI_WATCH_TEST_PAUSE_BEFORE_DECIDE === '1',
     pauseAfterAuthorized: env.PI_WATCH_TEST_PAUSE_AFTER_AUTHORIZED === '1',
+    pauseAfterAuthorizedMs:
+      Number.isFinite(pauseAfterAuthorizedMs) && pauseAfterAuthorizedMs > 0
+        ? Math.min(30_000, Math.floor(pauseAfterAuthorizedMs))
+        : 0,
     pauseControllerAfterLaunch:
       env.PI_WATCH_TEST_PAUSE_CONTROLLER_AFTER_LAUNCH === '1',
     disconnectBeforeGrantSend:
@@ -60,9 +70,9 @@ export function recordRunnerEvent(
   }
 }
 
-export function waitAtSeam(enabled: boolean): void {
+export function waitAtSeam(enabled: boolean, timeoutMs = 30_000): void {
   if (!enabled) return;
-  const until = Date.now() + 30_000;
+  const until = Date.now() + timeoutMs;
   const cell = new Int32Array(new SharedArrayBuffer(4));
   while (Date.now() < until) Atomics.wait(cell, 0, 0, 25);
 }

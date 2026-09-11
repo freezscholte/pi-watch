@@ -200,7 +200,13 @@ async function run(): Promise<void> {
   };
   const publishSpawnFailure = async (): Promise<void> => {
     if (!latchStopping()) return;
-    await publish({ ...SPAWN_FAILED_EVIDENCE }, true);
+    await publish(
+      {
+        ...SPAWN_FAILED_EVIDENCE,
+        deadlineTriggerObserved: deadlineObserved,
+      },
+      true,
+    );
     await close();
   };
   try {
@@ -278,6 +284,7 @@ async function run(): Promise<void> {
           false,
         );
       } else if (message.type === 'shell_error') {
+        if (message.reason === 'expired_before_spawn') deadlineObserved = true;
         void publishSpawnFailure();
       } else if (message.type === 'shell_exit') {
         // A shell outcome without the shell-spawn receipt is ambiguous by
@@ -322,7 +329,10 @@ async function run(): Promise<void> {
         await abandon();
         return;
       }
-      waitAtSeam(seams.pauseAfterAuthorized);
+      waitAtSeam(
+        seams.pauseAfterAuthorized || seams.pauseAfterAuthorizedMs > 0,
+        seams.pauseAfterAuthorizedMs || undefined,
+      );
       if (stopping || !guardian?.connected || grantSent) return;
       grantAttempted = true;
       grantSent = true;

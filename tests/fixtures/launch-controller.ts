@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { launchRunner, preflightLauncher } from '../../src/launch.ts';
 import { openStoreClient } from '../../src/store-client.ts';
 import { internalSeams, waitAtAsyncSeam } from '../../src/test-seams.ts';
@@ -17,7 +19,8 @@ async function run(): Promise<void> {
   const client = await openStoreClient(db, { trustedRoot: root });
   const reservation = await client.reserve({
     ownerUuid: owner,
-    sessionPath: values.get('session') ?? '/tmp/pi-watch-fixture-session.jsonl',
+    sessionPath:
+      values.get('session') ?? join(tmpdir(), 'pi-watch-fixture-session.jsonl'),
     namespace: 'tool_call',
     requestKey: values.get('key') ?? 'fixture-key',
     command: values.get('command') ?? 'true',

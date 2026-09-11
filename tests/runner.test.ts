@@ -944,6 +944,64 @@ test('withheld spawn receipt finalizes honestly as unknown', {
   }
 });
 
+test('grant arriving after the guardian deadline fails before shell spawn', {
+  timeout: 20_000,
+  skip: runtimeSkip,
+}, async () => {
+  const marker = join(
+    tmpdir(),
+    `pi-watch-expired-before-spawn-${crypto.randomUUID()}`,
+  );
+  const actorLog = join(
+    tmpdir(),
+    `pi-watch-expired-before-spawn-actors-${crypto.randomUUID()}`,
+  );
+  const job = await createJob(`printf x >> ${marker}`, { deadlineMs: 3_000 });
+  let runnerPid: number | undefined;
+  let guardianPid: number | undefined;
+  try {
+    await setEnvLaunch(
+      {
+        PI_WATCH_TEST_PAUSE_AFTER_AUTHORIZED_MS: '3500',
+        PI_WATCH_TEST_RUNNER_LOG: actorLog,
+        PI_WATCH_TEST_GUARDIAN_LOG: actorLog,
+      },
+      async () => {
+        await launchRunner(job.client, job.reservation, {
+          dbPath: job.db,
+          trustedRoot: job.root,
+        });
+      },
+    );
+    runnerPid = await waitForLoggedPid(actorLog, 'runner');
+    guardianPid = await waitForLoggedPid(actorLog, 'guardian');
+    await waitFor(
+      async () =>
+        (await job.client.observeJob(owner, job.reservation.job.jobId))
+          .finalized,
+      10_000,
+    );
+    const observation = await job.client.observeJob(
+      owner,
+      job.reservation.job.jobId,
+    );
+    assert.equal(observation.control.launchDecision, 'authorized');
+    assert.equal(observation.evidence.launch, 'spawn_failed');
+    assert.equal(observation.evidence.deadlineTriggerObserved, true);
+    assert.equal(observation.evidence.shellCode, null);
+    assert.equal(existsSync(marker), false);
+    await waitForGone(guardianPid, 5_000);
+    await waitForGone(runnerPid, 5_000);
+  } finally {
+    if (guardianPid !== undefined) killGroup(guardianPid);
+    if (runnerPid !== undefined) killGroup(runnerPid);
+    await job.client.close();
+    rmSync(actorLog, { force: true });
+    rmSync(marker, { force: true });
+    rmSync(job.root, { recursive: true, force: true });
+  }
+});
+
 test('guardian deadline records trigger and unconfirmed cleanup', {
   timeout: 30_000,
   skip: runtimeSkip,
@@ -1546,6 +1604,41 @@ test('runner exits when launcher keeps token stdin open', {
     if (processExists(pid)) killGroup(pid);
     child.stdin?.destroy();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runner executable override is confined to the internal environment seam', {
+  timeout: 20_000,
+  skip:
+    runtimeSkip || unsupportedNode === undefined
+      ? 'requires Node 26 and PI_WATCH_UNSUPPORTED_NODE'
+      : false,
+}, async () => {
+  assert.ok(unsupportedNode !== undefined);
+  const job = await createJob('exit 0');
+  const executedBy = join(job.root, 'runner-executable');
+  const entry = join(job.root, 'record-runner-executable.mjs');
+  writeFileSync(
+    entry,
+    `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(executedBy)}, process.execPath);\n`,
+  );
+  try {
+    await setEnvLaunch(
+      { PI_WATCH_TEST_RUNNER_EXECUTABLE: unsupportedNode },
+      async () => {
+        const receipt = await launchRunner(job.client, job.reservation, {
+          dbPath: job.db,
+          trustedRoot: job.root,
+          runnerEntry: entry,
+        });
+        assert.equal(receipt.status, 'spawned');
+      },
+    );
+    await waitFor(async () => existsSync(executedBy), 5_000);
+    assert.equal(readFileSync(executedBy, 'utf8'), unsupportedNode);
+  } finally {
+    await job.client.close();
+    rmSync(job.root, { recursive: true, force: true });
   }
 });
 

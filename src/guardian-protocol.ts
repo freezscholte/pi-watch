@@ -13,7 +13,7 @@ export type GuardianMessage =
   | { type: 'grant' }
   | { type: 'protocol_violation'; state: string }
   | { type: 'shell_spawned'; pid: number }
-  | { type: 'shell_error' }
+  | { type: 'shell_error'; reason: 'spawn' | 'expired_before_spawn' }
   | { type: 'shell_exit'; code: number | null; signal: string | null }
   | { type: 'cleanup_term'; observation: 'returned' | 'error' }
   | { type: 'cleanup_kill_intent' }

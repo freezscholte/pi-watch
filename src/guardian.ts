@@ -139,7 +139,17 @@ function handleGrant(): void {
     return;
   }
   // deadlineAtMs is immutable wall-clock store data; cleanup grace below is monotonic.
-  const delay = Math.max(0, reply.deadlineAtMs - Date.now());
+  const delay = reply.deadlineAtMs - Date.now();
+  if (delay <= 0) {
+    fixtureEvent('deadline_trigger');
+    sendGuardianMessage({ type: 'deadline' });
+    sendGuardianMessage({
+      type: 'shell_error',
+      reason: 'expired_before_spawn',
+    });
+    stop(1);
+    return;
+  }
   deadlineTimer = setTimeout(() => cleanup(true), delay);
   try {
     shell = spawn(reply.shPath, ['-c', reply.command], {
@@ -154,7 +164,7 @@ function handleGrant(): void {
     });
   } catch {
     closeOutputDescriptors();
-    sendGuardianMessage({ type: 'shell_error' });
+    sendGuardianMessage({ type: 'shell_error', reason: 'spawn' });
     stop(1);
     return;
   }
@@ -179,7 +189,7 @@ function handleGrant(): void {
   shell.once('error', () => {
     if (!shellExited) {
       closeOutputDescriptors();
-      sendGuardianMessage({ type: 'shell_error' });
+      sendGuardianMessage({ type: 'shell_error', reason: 'spawn' });
       stop(1);
     }
   });
