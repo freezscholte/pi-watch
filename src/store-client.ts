@@ -26,6 +26,7 @@ import {
   StoreError,
   StoreWriteError,
 } from './job-types.ts';
+import { type FixedLayout, prepareFixedLayout } from './private-path.ts';
 import type { EvidenceInput } from './store-evidence.ts';
 import type {
   StoreErrorResponseMessage,
@@ -45,6 +46,8 @@ export type {
 };
 
 export interface StoreClient {
+  /** Canonical fixed-layout capability created once at validated open. */
+  readonly fixedLayout: FixedLayout;
   reserve(input: ReservationInput): Promise<ReservationResult>;
   getJob(ownerUuid: string, jobId: string): Promise<JobRecord>;
   listJobs(ownerUuid: string): Promise<JobRecord[]>;
@@ -364,6 +367,14 @@ export async function openStoreClient(
 
   await startup;
 
+  let fixedLayout: FixedLayout;
+  try {
+    fixedLayout = prepareFixedLayout(dbPath, options.trustedRoot);
+  } catch (error) {
+    await worker.terminate().catch(() => undefined);
+    throw error;
+  }
+
   function request<T>(
     op: string,
     payload: unknown,
@@ -398,6 +409,7 @@ export async function openStoreClient(
   }
 
   return {
+    fixedLayout,
     reserve: async (input) => {
       const candidateJobId = allocateReservationId(input.candidateJobId);
       return request<ReservationResult>(

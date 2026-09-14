@@ -16,14 +16,42 @@ export interface InternalSeams {
   guardianLog: string | undefined;
   runnerLog: string | undefined;
   publishDelayMs: number;
+  /** Internal-only result-publication failure boundary for lifecycle tests. */
+  publicationFailure: 'launch_before' | 'launch_after' | 'terminal' | undefined;
+  /** Internal-only runner stream error selector. */
+  streamError: 'stdout' | 'stderr' | undefined;
+  /**
+   * Optional synthetic Error detail for the gated stream-error seam only.
+   * Accepted only at no more than 128 UTF-8 bytes and never logged.
+   */
+  streamErrorDetail: string | undefined;
+  /** Internal-only pause after the cutover deadline and before the freeze fence. */
+  freezeDelayMs: number;
+  /** Internal-only duplicate-trigger and post-freeze callback probe. */
+  raceCoordinator: boolean;
+  /**
+   * Internal-only bounded-capture fault selector. Enabled only when the
+   * explicit test gate is set; production arguments cannot reach this seam.
+   */
+  captureFault: string | undefined;
 }
 
 export function internalSeams(
   env: NodeJS.ProcessEnv = process.env,
+  acceptForwardedGuardianMode = false,
 ): InternalSeams {
   const pauseAfterAuthorizedMs = Number(
     env.PI_WATCH_TEST_PAUSE_AFTER_AUTHORIZED_MS ?? 0,
   );
+  const freezeDelayMs = Number(env.PI_WATCH_TEST_FREEZE_DELAY_MS ?? 0);
+  const internalGate = env.PI_WATCH_INTERNAL_TEST_SEAMS === '1';
+  const streamErrorDetail = env.PI_WATCH_TEST_STREAM_ERROR_DETAIL;
+  const boundedStreamErrorDetail =
+    internalGate &&
+    streamErrorDetail !== undefined &&
+    Buffer.byteLength(streamErrorDetail, 'utf8') <= 128
+      ? streamErrorDetail
+      : undefined;
   return {
     runnerExecutable: env.PI_WATCH_TEST_RUNNER_EXECUTABLE,
     guardianPath: env.PI_WATCH_TEST_GUARDIAN_PATH,
@@ -44,10 +72,36 @@ export function internalSeams(
       env.PI_WATCH_TEST_DECISION_FAILURE === 'after'
         ? env.PI_WATCH_TEST_DECISION_FAILURE
         : undefined,
-    guardianMode: env.PI_WATCH_TEST_GUARDIAN_MODE,
+    guardianMode:
+      env.PI_WATCH_TEST_GUARDIAN_MODE === 'withhold-all-and-hold' ||
+      env.PI_WATCH_TEST_GUARDIAN_MODE === 'disconnect-after-exit'
+        ? internalGate || acceptForwardedGuardianMode
+          ? env.PI_WATCH_TEST_GUARDIAN_MODE
+          : undefined
+        : env.PI_WATCH_TEST_GUARDIAN_MODE,
     guardianLog: env.PI_WATCH_TEST_GUARDIAN_LOG,
     runnerLog: env.PI_WATCH_TEST_RUNNER_LOG,
     publishDelayMs: Number(env.PI_WATCH_TEST_PUBLISH_DELAY_MS ?? 0),
+    publicationFailure:
+      internalGate &&
+      (env.PI_WATCH_TEST_PUBLICATION_FAILURE === 'launch_before' ||
+        env.PI_WATCH_TEST_PUBLICATION_FAILURE === 'launch_after' ||
+        env.PI_WATCH_TEST_PUBLICATION_FAILURE === 'terminal')
+        ? env.PI_WATCH_TEST_PUBLICATION_FAILURE
+        : undefined,
+    streamError:
+      internalGate &&
+      (env.PI_WATCH_TEST_STREAM_ERROR === 'stdout' ||
+        env.PI_WATCH_TEST_STREAM_ERROR === 'stderr')
+        ? env.PI_WATCH_TEST_STREAM_ERROR
+        : undefined,
+    streamErrorDetail: boundedStreamErrorDetail,
+    freezeDelayMs:
+      internalGate && Number.isFinite(freezeDelayMs) && freezeDelayMs > 0
+        ? Math.min(2_000, Math.floor(freezeDelayMs))
+        : 0,
+    raceCoordinator: internalGate && env.PI_WATCH_TEST_RACE_COORDINATOR === '1',
+    captureFault: internalGate ? env.PI_WATCH_TEST_CAPTURE_FAULT : undefined,
   };
 }
 

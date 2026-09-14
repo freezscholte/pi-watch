@@ -13,7 +13,9 @@ const foundation = {
   pi: { extensions: [] as string[] },
 };
 
-test('foundation package can be inspected without pretending it is releasable', () => {
+test('foundation package can be inspected without pretending it is releasable', {
+  timeout: 60_000,
+}, () => {
   assert.deepEqual(packageProblems(foundation, documents), []);
   const problems = releaseProblems(foundation, documents);
   assert.ok(problems.some((problem) => problem.includes('private')));
@@ -21,14 +23,25 @@ test('foundation package can be inspected without pretending it is releasable', 
   assert.ok(problems.some((problem) => problem.includes('extension entry')));
 });
 
-test('unexpected or sensitive tarball paths fail closed', () => {
+test('unexpected or sensitive tarball paths fail closed', {
+  timeout: 60_000,
+}, () => {
   for (const path of [
     '.env',
     '.pi/settings.json',
     'spikes/results.ndjson',
     'docs/private.md',
     'node_modules/private/index.js',
+    'tests/fixtures/owned-process-registry.ts',
+    'tests/fixtures/owned-registry-failure.test.ts',
     'dist/jobs.sqlite',
+    'dist/jobs.sqlite-wal',
+    'dist/stdout.raw',
+    'dist/stderr.truncated',
+    'dist/stderr.closed.json',
+    'dist/command.log',
+    'dist/session.jsonl',
+    'dist/private-runtime/session.json',
     'dist/index.js.map',
     'dist/../private.js',
     'dist/.secret.js',
@@ -42,13 +55,17 @@ test('unexpected or sensitive tarball paths fail closed', () => {
   }
 });
 
-test('the reviewed npm files allowlist cannot silently expand', () => {
+test('the reviewed npm files allowlist cannot silently expand', {
+  timeout: 60_000,
+}, () => {
   assert.ok(
     packageProblems({ ...foundation, files: ['**'] }, documents).length > 0,
   );
 });
 
-test('required package documents, license and discovery metadata are checked', () => {
+test('required package documents, license and discovery metadata are checked', {
+  timeout: 60_000,
+}, () => {
   for (const path of documents) {
     assert.ok(
       packageProblems(
@@ -66,7 +83,9 @@ test('required package documents, license and discovery metadata are checked', (
   );
 });
 
-test('malformed manifests and missing extension entry files are rejected', () => {
+test('malformed manifests and missing extension entry files are rejected', {
+  timeout: 60_000,
+}, () => {
   assert.ok(packageProblems(null, documents).length > 0);
   assert.ok(
     packageProblems(
@@ -82,7 +101,9 @@ test('malformed manifests and missing extension entry files are rejected', () =>
   );
 });
 
-test('a packed type declaration cannot serve as the extension entry', () => {
+test('a packed type declaration cannot serve as the extension entry', {
+  timeout: 60_000,
+}, () => {
   const manifest = {
     ...foundation,
     version: '0.1.0',
@@ -95,7 +116,9 @@ test('a packed type declaration cannot serve as the extension entry', () => {
   );
 });
 
-test('a deliberately prepared release must contain its declared extension', () => {
+test('a deliberately prepared release must contain its declared extension', {
+  timeout: 60_000,
+}, () => {
   const manifest = {
     ...foundation,
     version: '0.1.0',

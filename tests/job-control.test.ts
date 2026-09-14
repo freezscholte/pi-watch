@@ -289,6 +289,18 @@ test('cancellation suppression publishes one finalized result and notice', {
     assert.equal(result?.revision, 1);
     assert.equal(result?.evidence.launch, 'suppressed_cancelled');
     assert.equal(result?.evidence.cleanupState, 'not_required');
+    assert.deepEqual(result?.evidence.stdout, {
+      available: false,
+      truncated: false,
+      incomplete: false,
+      openAtCutover: false,
+    });
+    assert.deepEqual(result?.evidence.stderr, {
+      available: false,
+      truncated: false,
+      incomplete: false,
+      openAtCutover: false,
+    });
     assert.equal(result?.evidence.finalized, true);
     assert.equal(store.listNotices(OWNER, reserved.job.jobId).length, 1);
     assert.equal(

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -35,22 +36,27 @@ const runtimeSkip = runtimeSupported
 const unsupportedNode =
   process.env.PI_WATCH_UNSUPPORTED_NODE ??
   (runtimeSupported ? undefined : process.execPath);
+const expectedJavaScript = [
+  'job-store.js',
+  'job-types.js',
+  'owner.js',
+  'store-client.js',
+  'store-evidence.js',
+  'store-worker.js',
+  'launch.js',
+  'runner.js',
+  'guardian.js',
+  'guardian-protocol.js',
+  'process-control.js',
+  'private-path.js',
+  'output-capture.js',
+  'output.js',
+  'test-seams.js',
+];
 
-test('the build emits only the production ESM closure with rewritten imports', () => {
-  const expectedJavaScript = [
-    'job-store.js',
-    'job-types.js',
-    'owner.js',
-    'store-client.js',
-    'store-evidence.js',
-    'store-worker.js',
-    'launch.js',
-    'runner.js',
-    'guardian.js',
-    'guardian-protocol.js',
-    'process-control.js',
-    'test-seams.js',
-  ];
+test('a fresh build emits the W4 production ESM closure with rewritten imports', {
+  timeout: 60_000,
+}, () => {
   const entries = readdirSync(dist).sort();
   assert.deepEqual(
     entries,
@@ -80,6 +86,7 @@ test('the build emits only the production ESM closure with rewritten imports', (
 
 test('an isolated emitted store client uses its default compiled worker and closes it', {
   skip: runtimeSkip,
+  timeout: 60_000,
 }, () => {
   const isolated = mkdtempSync(join(tmpdir(), 'pi-watch-compiled-'));
   const caller = mkdtempSync(join(tmpdir(), 'pi-watch-caller-'));
@@ -155,6 +162,7 @@ test('an isolated emitted store client uses its default compiled worker and clos
 
 test('the compiled default worker exposes durable control operations', {
   skip: runtimeSkip,
+  timeout: 60_000,
 }, () => {
   const isolated = mkdtempSync(join(tmpdir(), 'pi-watch-compiled-control-'));
   const caller = mkdtempSync(
@@ -220,6 +228,7 @@ test('the compiled default worker exposes durable control operations', {
 
 test('a missing emitted worker fails promptly without a live orphan or path leak', {
   skip: runtimeSkip,
+  timeout: 60_000,
 }, () => {
   const isolated = mkdtempSync(join(tmpdir(), 'pi-watch-missing-worker-'));
   const caller = mkdtempSync(join(tmpdir(), 'pi-watch-missing-caller-'));
@@ -284,6 +293,7 @@ test('a missing emitted worker fails promptly without a live orphan or path leak
 
 test('a source client with URL query and fragment uses its default TypeScript worker', {
   skip: runtimeSkip,
+  timeout: 60_000,
 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-watch-source-url-'));
   try {
@@ -318,6 +328,7 @@ test('a source client with URL query and fragment uses its default TypeScript wo
 
 test('the emitted client refuses unsupported Node before worker or disk use', {
   skip: unsupportedNode === undefined ? 'set PI_WATCH_UNSUPPORTED_NODE' : false,
+  timeout: 60_000,
 }, () => {
   assert.ok(unsupportedNode !== undefined);
   assert.ok(existsSync(unsupportedNode));
@@ -366,15 +377,184 @@ test('the emitted client refuses unsupported Node before worker or disk use', {
   }
 });
 
-test('the actual package file list includes the emitted closure while release remains blocked', () => {
+test('the built output serializer passes complete envelopes through byte-for-byte', {
+  timeout: 60_000,
+}, () => {
+  const isolated = mkdtempSync(join(tmpdir(), 'pi-watch-compiled-output-'));
+  const caller = mkdtempSync(join(tmpdir(), 'pi-watch-output-caller-'));
+  try {
+    cpSync(dist, join(isolated, 'dist'), { recursive: true });
+    writeFileSync(join(isolated, 'package.json'), '{"type":"module"}\n');
+    const moduleUrl = pathToFileURL(join(isolated, 'dist/output.js')).href;
+    const script = `
+      import { OUTPUT_ENVELOPE_LIMIT, readOutputSnapshot } from ${JSON.stringify(moduleUrl)};
+      const passThrough = (envelope) => JSON.stringify(envelope);
+      const observation = {
+        jobId: '11111111-2222-4333-8444-555555555555',
+        finalized: true,
+        capture: {
+          available: false,
+          truncated: false,
+          incomplete: false,
+          openAtCutover: false
+        }
+      };
+      const envelopes = [
+        readOutputSnapshot({}, observation, 'stdout', 0),
+        readOutputSnapshot({}, observation, 'stdout', 1)
+      ];
+      const serialized = envelopes.map((envelope) => JSON.stringify(envelope));
+      const passed = envelopes.map(passThrough);
+      console.log(JSON.stringify({
+        limit: OUTPUT_ENVELOPE_LIMIT,
+        serialized,
+        passed,
+        sizes: passed.map((value) => Buffer.byteLength(value, 'utf8'))
+      }));
+    `;
+    const fixture = join(caller, 'compiled-output.mjs');
+    writeFileSync(fixture, script);
+    const result = spawnSync(process.execPath, [fixture], {
+      cwd: caller,
+      encoding: 'utf8',
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const report = JSON.parse(result.stdout.trim()) as {
+      limit: number;
+      serialized: string[];
+      passed: string[];
+      sizes: number[];
+    };
+    assert.equal(report.limit, 51_200);
+    assert.deepEqual(report.passed, report.serialized);
+    assert.deepEqual(
+      report.sizes,
+      report.passed.map((value) => Buffer.byteLength(value)),
+    );
+    assert.ok(report.sizes.every((size) => size <= report.limit));
+    assert.deepEqual(
+      report.passed.map((value) => JSON.parse(value).ok),
+      [true, false],
+    );
+    assert.equal(existsSync(join(isolated, 'src')), false);
+  } finally {
+    rmSync(isolated, { recursive: true, force: true });
+    rmSync(caller, { recursive: true, force: true });
+  }
+});
+
+test('the copied parent plan matches the approved byte digest', {
+  timeout: 60_000,
+}, () => {
+  const bytes = readFileSync(
+    join(
+      root,
+      'docs/plans/2026-09-09-1329-feat-v0-1-background-commands-plan.md',
+    ),
+  );
+  assert.equal(bytes.length, 75_433);
+  assert.equal(
+    createHash('sha256').update(bytes).digest('hex'),
+    '59757b99ec2e991c105d44f295a6c2f849798f0083d7dc844b23488f4a8e68e3',
+  );
+});
+
+test('W4 documentation states earned behavior and deferred boundaries', {
+  timeout: 60_000,
+}, () => {
+  const documentation = [
+    'README.md',
+    'docs/development.md',
+    'docs/u2-launch.md',
+  ]
+    .map((path) => readFileSync(join(root, path), 'utf8'))
+    .join('\n');
+  for (const required of [
+    '5,242,880 bytes per stream',
+    'not cumulative',
+    'unbounded',
+    'sidecars',
+    'SQLite/WAL',
+    'failures',
+    'remnants',
+    'orphans',
+    'indefinitely',
+    'same OS user',
+    'may contain secrets',
+    'EPIPE/SIGPIPE',
+    'not hard real-time',
+    'all-descendant stop',
+    'cancellation delivery',
+    'heartbeat/reconciliation',
+    'Pi authorization or delivery',
+    'reload survival',
+    'packed installation',
+    'broad OS support',
+    'PI_WATCH_INTERNAL_TEST_SEAMS=1',
+    'capture fault',
+    'publication failure',
+    'stream error',
+    '128 UTF-8 bytes',
+    'freeze delay',
+    'race coordinator',
+    'withhold-all-and-hold',
+    'tests/fixtures/owned-process-registry.ts',
+    'per-test PID and known-PGID registry',
+    'no process scans',
+    'injected-failure reporter',
+  ]) {
+    assert.ok(
+      documentation.includes(required),
+      `missing W4 disclosure: ${required}`,
+    );
+  }
+});
+
+test('the actual package file list includes only the emitted closure while release remains blocked', {
+  timeout: 60_000,
+}, () => {
   const output = execFileSync(
     process.execPath,
     [npmCli, '--ignore-scripts', 'run', 'check:package'],
     { cwd: root, encoding: 'utf8', timeout: 60_000, maxBuffer: 1024 * 1024 },
   );
   assert.match(output, /Package content policy passed/);
-  assert.match(output, /dist\/store-client\.js/);
-  assert.match(output, /dist\/store-worker\.js/);
+  const packedPaths = output
+    .slice(output.indexOf('files):\n') + 'files):\n'.length)
+    .split('This checks package contents;')[0]
+    ?.trim()
+    .split('\n');
+  assert.deepEqual(
+    packedPaths,
+    [
+      'CHANGELOG.md',
+      'LICENSE',
+      'README.md',
+      ...expectedJavaScript.flatMap((name) => [
+        `dist/${name.replace('.js', '.d.ts')}`,
+        `dist/${name}`,
+      ]),
+      'package.json',
+    ].sort(),
+  );
+  for (const required of [
+    'dist/private-path.js',
+    'dist/output-capture.js',
+    'dist/output.js',
+  ]) {
+    assert.ok(packedPaths.includes(required));
+  }
+  assert.ok(
+    packedPaths.every(
+      (path) =>
+        !/(?:\.raw$|\.closed\.json$|\.truncated$|\.sqlite(?:-wal|-shm)?$|\.log$|\.jsonl$|^\.pi\/)/.test(
+          path,
+        ),
+    ),
+  );
 
   const release = spawnSync(
     process.execPath,
