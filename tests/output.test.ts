@@ -1104,14 +1104,20 @@ test('output pages preserve LF and tab but contain no disallowed terminal contro
   }
 });
 
-test('success envelope line and byte bounds are exact and resumable', {
+test('success envelope line, escaping, sanitizer, and byte bounds are exact and resumable', {
   timeout: 60_000,
 }, async () => {
-  for (const bytes of [
-    Buffer.from('x\n'.repeat(2_001)),
-    Buffer.alloc(60_000, 0x61),
-    Buffer.alloc(60_000, 0x5c),
-  ]) {
+  for (const [bytes, expectedOffset, nextRawToken, nextDisplayedToken] of [
+    [Buffer.from('x\n'.repeat(2_001)), 4_000, null, null],
+    [Buffer.alloc(60_000, 0x61), 50_965, Buffer.from([0x61]), 'a'],
+    [
+      Buffer.concat([Buffer.from([0x61]), Buffer.alloc(59_999, 0x5c)]),
+      25_483,
+      Buffer.from([0x5c]),
+      '\\',
+    ],
+    [Buffer.alloc(60_000, 0x00), 10_193, Buffer.from([0x00]), '\\x00'],
+  ] as const) {
     const { root, layout } = await sealedFixture(bytes);
     try {
       const first = readOutputSnapshot(
@@ -1128,28 +1134,43 @@ test('success envelope line and byte bounds are exact and resumable', {
         (firstData.text.match(/\n/g) ?? []).length +
         (firstData.text.length > 0 && !firstData.text.endsWith('\n') ? 1 : 0);
       assert.ok(lines <= 2_000);
-      if (bytes[0] === 0x78) {
+      assert.equal(firstData.nextOffsetBytes, expectedOffset);
+      if (nextRawToken === null || nextDisplayedToken === null) {
         assert.equal(lines, 2_000);
-        assert.equal(firstData.nextOffsetBytes, 4_000);
       } else {
-        if (bytes[0] === 0x61) {
-          assert.equal(
-            Buffer.byteLength(JSON.stringify(first)),
-            OUTPUT_ENVELOPE_LIMIT,
-          );
-        }
-        const nextToken = bytes[0] === 0x5c ? '\\' : 'a';
+        assert.equal(
+          Buffer.byteLength(JSON.stringify(first)),
+          OUTPUT_ENVELOPE_LIMIT,
+        );
+        assertRedactedEqual(
+          bytes.subarray(
+            firstData.nextOffsetBytes,
+            firstData.nextOffsetBytes + nextRawToken.length,
+          ),
+          nextRawToken,
+        );
         const withOneMoreToken = {
           ...first,
-          data: { ...firstData, text: `${firstData.text}${nextToken}` },
+          data: {
+            ...firstData,
+            nextOffsetBytes:
+              firstData.nextOffsetBytes + nextRawToken.byteLength,
+            text: `${firstData.text}${nextDisplayedToken}`,
+          },
         };
-        assert.ok(
-          Buffer.byteLength(JSON.stringify(withOneMoreToken)) >
-            OUTPUT_ENVELOPE_LIMIT,
+        const serializedWithOneMoreToken = Buffer.byteLength(
+          JSON.stringify(withOneMoreToken),
         );
+        assert.equal(
+          serializedWithOneMoreToken,
+          OUTPUT_ENVELOPE_LIMIT +
+            Buffer.byteLength(JSON.stringify(nextDisplayedToken)) -
+            2,
+        );
+        assert.ok(serializedWithOneMoreToken > OUTPUT_ENVELOPE_LIMIT);
       }
       assert.equal(firstData.hasMore, true);
-      let cursor = firstData.nextOffsetBytes;
+      let cursor: number = firstData.nextOffsetBytes;
       let pages = 1;
       while (cursor < bytes.length) {
         const next = successData(

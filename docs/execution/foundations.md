@@ -7,15 +7,15 @@ This ledger was bootstrapped before the optional local tracker was loaded. Track
 ## Execution checkpoint
 
 **Current merged anchor:** PR #12 / 9cc7f09ccf73cea03465e98accaf73fd5e4c9296
-**Resume here:** Managed checkpoint covered only U1 and was stale. U1 is merged. Current owner-authorized work is U2-W4 from docs/plans/2026-09-14-0755-feat-bounded-output-capture-plan.md on feat/u2-w4-bounded-output-capture; implementation/local verification are authorized, shipping is not.
-**Active PR slice:** U1-W1
-**Slice branch:** chore/repository-foundations
-**Slice PR:** #1
-**Slice outcome:** Merged as 1f4fa6d0b5dcec85a221889e143da0285ce17fe0; Node 24/26 checks passed.
+**Resume here:** U2-W4 PR #13 is open from feat/u2-w4-bounded-output-capture. Address current review feedback, verify the final pushed head and CI, then return merge control to the owner; do not merge or publish without fresh authorization.
+**Active PR slice:** U2-W4
+**Slice branch:** feat/u2-w4-bounded-output-capture
+**Slice PR:** #13
+**Slice outcome:** PR open at d7a028b; initial GitHub CI green. Two valid review items are being resolved before final readiness.
 
 | Unit | Status | Merged evidence | Remaining gates |
 | --- | --- | --- | --- |
-| U1 | Done | GitHub PR #1 is MERGED at 1f4fa6d0b5dcec85a221889e143da0285ce17fe0 (2026-09-09T10:33:35Z). Exact PR checks succeeded for Node 24 and Node 26. The canonical repository has since advanced through merged PR #12 at 9cc7f09ccf73cea03465e98accaf73fd5e4c9296; local HEAD and origin/main both equal that commit. | None. |
+| U1 | Done | U1 remains merged via PR #1 at 1f4fa6d0b5dcec85a221889e143da0285ce17fe0 with successful Node 24/26 checks. Current canonical anchor is merged PR #12 at 9cc7f09ccf73cea03465e98accaf73fd5e4c9296. U2-W4 was committed as d7a028b09e3db2a33b3e2e26b9da1f59e18d34bd and opened as PR #13; local Node 26.8.2/SQLite 3.53.4 verification passed 238/238 with zero skips before review feedback. | None. |
 
 ### Append-only execution log
 
@@ -25,6 +25,7 @@ This ledger was bootstrapped before the optional local tracker was loaded. Track
 - **2026-09-09 — U1 Partial**: Completed the authorized commit/push/PR step and verified exact-head GitHub CI. This local checkpoint update is not included in the already-tested PR commit. Merge remains user-controlled. Evidence: Committed/pushed 68343ba87953406a38729481331924e8ce3ae037 and opened https://github.com/freezscholte/pi-watch/pull/1. GitHub CI run 34339115499 completed successfully for Checks (Node 24) and Checks (Node 26) on that exact PR head. Verified remote PR contains exactly the approved 25-file foundation tree; research/spikes/review artifacts remain local. Public-only clean-copy checks passed before shipping. No merge or release occurred. <!-- execution-update:foundation-pr-open-ci-green-20260909:bdfe8049332b1d6734df18fc873cb27f0694cfb4d2570f601648143d9d8b5d9b -->
 - **2026-09-09 — U1 Partial**: Accepted Copilot's stale-checkpoint finding; treated the cwd comment as unsupported direct invocation, backed by real command checks. Corrected current snapshot and timeless authorization wording. No product or package-checking code changed. Evidence: PR #1 contains foundation commit 68343ba87953406a38729481331924e8ce3ae037; GitHub CI run 34339115499 passed Node 24/26. Copilot identified stale checkpoint state, corrected through the tracker. The working-directory concern was tested: npm --prefix from unrelated cwd passes; direct Node invocation rejects with npm usage instructions. Owner authorized merge if final checks and feedback are satisfactory. <!-- execution-update:foundation-pr-feedback-merge-authorized-20260909:c28637d96b4305c9d6855db6cb4d3a5cb682729850dd100ee5bf3e8135fb66f8 -->
 - **2026-09-14 — U1 Done**: Reconciled stale U1 checkpoint from live GitHub evidence. PR #1 merged with green Node 24/26 checks; current canonical merged anchor is PR #12 at 9cc7f09. Evidence: GitHub PR #1 is MERGED at 1f4fa6d0b5dcec85a221889e143da0285ce17fe0 (2026-09-09T10:33:35Z). Exact PR checks succeeded for Node 24 and Node 26. The canonical repository has since advanced through merged PR #12 at 9cc7f09ccf73cea03465e98accaf73fd5e4c9296; local HEAD and origin/main both equal that commit. <!-- execution-update:reconcile-u1-pr1-20260914:2839354bf3c5c7a31d1fc46a1917dbecef92aa63a3d4de40693a2596a2d43ba4 -->
+- **2026-09-14 — U1 Done**: Advanced the active checkpoint from historical U1-W1 to U2-W4 PR #13. W4 was committed and pushed after full local Node 26 verification; current review feedback remains before merge readiness. Evidence: U1 remains merged via PR #1 at 1f4fa6d0b5dcec85a221889e143da0285ce17fe0 with successful Node 24/26 checks. Current canonical anchor is merged PR #12 at 9cc7f09ccf73cea03465e98accaf73fd5e4c9296. U2-W4 was committed as d7a028b09e3db2a33b3e2e26b9da1f59e18d34bd and opened as PR #13; local Node 26.8.2/SQLite 3.53.4 verification passed 238/238 with zero skips before review feedback. <!-- execution-update:u2-w4-pr13-open-20260914:fad4f8fa1c8634ab24cd14632d0714cffe801b6316c7471fdfff6c11a6cb652e -->
 
 ---
 
