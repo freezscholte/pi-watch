@@ -6,7 +6,14 @@ import {
   isGuardianMessage,
 } from './guardian-protocol.ts';
 import { checkRuntimeSupport, type JobRecord } from './job-store.ts';
+import {
+  type CaptureResult,
+  createOutputCapture,
+  type OutputCapture,
+} from './output-capture.ts';
+import { prepareCaptureWorkspace } from './private-path.ts';
 import { openStoreClient, type StoreClient } from './store-client.ts';
+import type { StreamCaptureFacts } from './store-evidence.ts';
 import {
   decideLaunchAtTestBoundary,
   internalSeams,
@@ -15,6 +22,8 @@ import {
   utilityPaths,
   waitAtSeam,
 } from './test-seams.ts';
+
+const CAPTURE_CUTOVER_MS = 1_000;
 
 function destroyReadStream(
   stream: NodeJS.ReadableStream | null | undefined,
@@ -78,6 +87,40 @@ function tokenFromStdin(timeoutMs = 2_000): Promise<string> {
     process.stdin.resume();
   });
 }
+
+interface AttachedCapture {
+  capture: OutputCapture | undefined;
+  stream: NodeJS.ReadableStream | null;
+  ended: boolean;
+  failed: boolean;
+  onData: (chunk: Buffer | string) => void;
+  onEnd: () => void;
+  onError: () => void;
+}
+
+type CoordinatorState =
+  | 'observing'
+  | 'cutting_over'
+  | 'freezing'
+  | 'publishing'
+  | 'closed';
+
+const UNAVAILABLE_COMPLETE: StreamCaptureFacts = {
+  available: false,
+  truncated: false,
+  incomplete: false,
+  openAtCutover: false,
+};
+
+function resultFacts(result: CaptureResult): StreamCaptureFacts {
+  return {
+    available: result.available,
+    truncated: result.truncated,
+    incomplete: result.incomplete,
+    openAtCutover: result.openAtCutover,
+  };
+}
+
 async function run(): Promise<void> {
   checkRuntimeSupport();
   const parsed = args();
@@ -104,18 +147,17 @@ async function run(): Promise<void> {
   let budget: NodeJS.Timeout | undefined;
   let deadlineTimer: NodeJS.Timeout | undefined;
   let readinessTimer: NodeJS.Timeout | undefined;
+  let cutoverTimer: NodeJS.Timeout | undefined;
+  let cutoverDeadline: number | undefined;
+  let freezeDelayApplied = false;
   let stdout: NodeJS.ReadableStream | null = null;
   let stderr: NodeJS.ReadableStream | null = null;
+  let stdoutCapture: AttachedCapture | undefined;
+  let stderrCapture: AttachedCapture | undefined;
+  let captureSetupFailed = false;
   let topologySucceeded = false;
   let closed = false;
-  const streams = { available: false, incomplete: true } as const;
-  const SPAWN_FAILED_EVIDENCE = {
-    launch: 'spawn_failed' as const,
-    cleanupState: 'not_required' as const,
-    stdout: { available: false as const },
-    stderr: { available: false as const },
-    finalized: true as const,
-  };
+  let coordinator: CoordinatorState = 'observing';
 
   let publication = Promise.resolve();
   const publish = (
@@ -124,13 +166,16 @@ async function run(): Promise<void> {
   ): Promise<void> => {
     const task = publication.then(async () => {
       if ((settled && !final) || closed) return;
-      if (seams.publishDelayMs > 0) {
+      if (seams.publishDelayMs > 0)
         await new Promise((resolve) =>
           setTimeout(resolve, seams.publishDelayMs),
         );
-      }
       if ((settled && !final) || closed) return;
       try {
+        if (!final && seams.publicationFailure === 'launch_before')
+          throw new Error('injected launch publication failure');
+        if (final && seams.publicationFailure === 'terminal')
+          throw new Error('injected terminal publication failure');
         const result = await store.publishResult(
           parsed.owner,
           parsed.job,
@@ -139,49 +184,50 @@ async function run(): Promise<void> {
           input,
           runnerToken,
         );
+        if (!final && seams.publicationFailure === 'launch_after')
+          throw new Error('injected launch acknowledgement loss');
         revision = result.revision;
         if (final) settled = true;
       } catch {
-        /* a lost writer cannot invent evidence */
+        // A committed launch whose acknowledgement was lost is observed, not
+        // republished, so the queued terminal write can retain exact ordering.
+        if (!final) {
+          try {
+            const observed = await store.observeJob(parsed.owner, parsed.job);
+            if (
+              !observed.finalized &&
+              input.launch !== undefined &&
+              observed.evidence.launch === input.launch
+            )
+              revision = observed.latestRevision;
+          } catch {
+            // Unknown storage state cannot authorize a publication retry.
+          }
+        }
       }
     });
     publication = task.catch(() => undefined);
     return task;
   };
-  const latchStopping = (): boolean => {
-    if (stopping || settled || closed) return false;
-    stopping = true;
-    return true;
+
+  const detachCapture = (attached: AttachedCapture | undefined): void => {
+    if (attached === undefined) return;
+    attached.stream?.off('data', attached.onData);
+    attached.stream?.off('end', attached.onEnd);
+    attached.stream?.off('error', attached.onError);
   };
-  const finalize = async (): Promise<void> => {
-    if (!latchStopping()) return;
-    const input: Parameters<StoreClient['publishResult']>[4] = {
-      ...(grantSent && !launched ? { launch: 'unknown' as const } : {}),
-      shellCode,
-      shellSignal,
-      cleanupState: launched ? 'unconfirmed' : 'not_requested',
-      cleanupTermObservation: term,
-      cleanupKillIntentObserved: killIntent,
-      deadlineTriggerObserved: deadlineObserved,
-      stdout: streams,
-      stderr: streams,
-      finalized: true,
-    };
-    await publish(input, true);
-  };
-  const beginBudget = (): void => {
-    if (budget !== undefined || stopping) return;
-    budget = setTimeout(() => {
-      void finalize().finally(() => void close());
-    }, 7_000);
-  };
+
   const close = async (): Promise<void> => {
     if (closed) return;
     stopping = true;
     closed = true;
+    coordinator = 'closed';
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
     if (readinessTimer !== undefined) clearTimeout(readinessTimer);
     if (budget !== undefined) clearTimeout(budget);
+    if (cutoverTimer !== undefined) clearTimeout(cutoverTimer);
+    detachCapture(stdoutCapture);
+    detachCapture(stderrCapture);
     destroyReadStream(stdout);
     destroyReadStream(stderr);
     if (guardian !== undefined) {
@@ -194,21 +240,232 @@ async function run(): Promise<void> {
     }
     await store.close();
   };
+
   const abandon = async (): Promise<void> => {
     stopping = true;
     await close();
   };
+
+  const latchStopping = (): boolean => {
+    if (stopping || settled || closed) return false;
+    stopping = true;
+    return true;
+  };
+
+  const discardCaptureStaging = async (): Promise<void> => {
+    detachCapture(stdoutCapture);
+    detachCapture(stderrCapture);
+    destroyReadStream(stdout);
+    destroyReadStream(stderr);
+    await Promise.all([
+      stdoutCapture?.capture?.invalidateEmptyStaging(),
+      stderrCapture?.capture?.invalidateEmptyStaging(),
+    ]);
+  };
+
   const publishSpawnFailure = async (): Promise<void> => {
     if (!latchStopping()) return;
+    await discardCaptureStaging();
     await publish(
       {
-        ...SPAWN_FAILED_EVIDENCE,
+        launch: 'spawn_failed',
+        cleanupState: 'not_required',
+        stdout: UNAVAILABLE_COMPLETE,
+        stderr: UNAVAILABLE_COMPLETE,
         deadlineTriggerObserved: deadlineObserved,
+        finalized: true,
       },
       true,
     );
     await close();
   };
+
+  const attach = (
+    stream: NodeJS.ReadableStream | null,
+    capture: OutputCapture | undefined,
+  ): AttachedCapture => {
+    const attached: AttachedCapture = {
+      capture,
+      stream,
+      ended: false,
+      failed: false,
+      onData: (chunk) => {
+        if (
+          coordinator === 'freezing' ||
+          coordinator === 'publishing' ||
+          closed
+        )
+          return;
+        capture?.accept(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      },
+      onEnd: () => {
+        if (
+          coordinator === 'freezing' ||
+          coordinator === 'publishing' ||
+          closed
+        )
+          return;
+        attached.ended = true;
+        void capture?.seal({ source: 'eof' });
+      },
+      onError: () => {
+        if (
+          coordinator === 'freezing' ||
+          coordinator === 'publishing' ||
+          closed
+        )
+          return;
+        attached.failed = true;
+        // A read error is capture loss, not EOF. Keep draining any later
+        // observations; real end or lifecycle freeze owns the seal reason.
+        capture?.sourceError();
+      },
+    };
+    stream?.on('data', attached.onData);
+    stream?.once('end', attached.onEnd);
+    stream?.on('error', attached.onError);
+    stream?.resume();
+    return attached;
+  };
+
+  const prepareCapture = (): void => {
+    let stdoutOutput: OutputCapture | undefined;
+    let stderrOutput: OutputCapture | undefined;
+    try {
+      const workspace = prepareCaptureWorkspace(store.fixedLayout, parsed.job);
+      stdoutOutput = createOutputCapture(workspace, 'stdout');
+      stderrOutput = createOutputCapture(workspace, 'stderr');
+    } catch {
+      captureSetupFailed = true;
+    }
+    stdoutCapture = attach(stdout, stdoutOutput);
+    stderrCapture = attach(stderr, stderrOutput);
+    const selected =
+      seams.streamError === 'stdout'
+        ? stdout
+        : seams.streamError === 'stderr'
+          ? stderr
+          : null;
+    if (selected !== null)
+      setImmediate(() => {
+        if (!stopping && !closed)
+          selected.emit(
+            'error',
+            new Error(
+              seams.streamErrorDetail ?? 'Synthetic stream read error.',
+            ),
+          );
+      });
+  };
+
+  const unavailableCutoverFacts = (
+    attached: AttachedCapture | undefined,
+  ): StreamCaptureFacts => ({
+    available: false,
+    truncated: false,
+    incomplete: true,
+    openAtCutover: attached?.ended !== true,
+  });
+
+  const freezeCapture = async (
+    attached: AttachedCapture | undefined,
+  ): Promise<StreamCaptureFacts> => {
+    if (attached?.capture === undefined)
+      return unavailableCutoverFacts(attached);
+    if (attached.failed) attached.capture.sourceError();
+    return resultFacts(await attached.capture.seal({ source: 'cutover' }));
+  };
+
+  const freezeAndPublish = async (): Promise<void> => {
+    if (coordinator !== 'cutting_over' || cutoverDeadline === undefined) return;
+    const remaining = cutoverDeadline - performance.now();
+    if (remaining > 0) {
+      cutoverTimer = setTimeout(() => void freezeAndPublish(), remaining);
+      return;
+    }
+    if (!freezeDelayApplied && seams.freezeDelayMs > 0) {
+      freezeDelayApplied = true;
+      recordRunnerEvent(seams.runnerLog, 'capture_freeze_seam');
+      cutoverTimer = setTimeout(
+        () => void freezeAndPublish(),
+        seams.freezeDelayMs,
+      );
+      return;
+    }
+    coordinator = 'freezing';
+    stopping = true;
+    recordRunnerEvent(seams.runnerLog, `capture_freezing ${performance.now()}`);
+    detachCapture(stdoutCapture);
+    detachCapture(stderrCapture);
+    destroyReadStream(stdout);
+    destroyReadStream(stderr);
+    if (seams.raceCoordinator) {
+      stdoutCapture?.onData(Buffer.from('late'));
+      stdoutCapture?.onError();
+      stdoutCapture?.onEnd();
+      stderrCapture?.onData(Buffer.from('late'));
+      stderrCapture?.onError();
+      stderrCapture?.onEnd();
+      recordRunnerEvent(seams.runnerLog, 'post_freeze_callbacks_probed');
+    }
+    const [stdoutFacts, stderrFacts] = await Promise.all([
+      freezeCapture(stdoutCapture),
+      freezeCapture(stderrCapture),
+    ]);
+    recordRunnerEvent(seams.runnerLog, 'capture_seal_complete');
+    recordRunnerEvent(seams.runnerLog, 'capture_frozen_snapshot');
+    coordinator = 'publishing';
+    const terminalEvidence: Parameters<StoreClient['publishResult']>[4] = {
+      launch: launched ? 'launched' : 'unknown',
+      shellCode,
+      shellSignal,
+      cleanupState:
+        launched || deadlineObserved || term !== null || killIntent
+          ? 'unconfirmed'
+          : 'not_requested',
+      cleanupTermObservation: term,
+      cleanupKillIntentObserved: killIntent,
+      deadlineTriggerObserved: deadlineObserved,
+      stdout: captureSetupFailed
+        ? unavailableCutoverFacts(stdoutCapture)
+        : stdoutFacts,
+      stderr: captureSetupFailed
+        ? unavailableCutoverFacts(stderrCapture)
+        : stderrFacts,
+      finalized: true,
+    };
+    try {
+      recordRunnerEvent(seams.runnerLog, 'terminal_publish_attempt');
+      await publish(terminalEvidence, true);
+    } finally {
+      await close();
+      recordRunnerEvent(seams.runnerLog, 'runner_closed');
+    }
+  };
+
+  const beginCutover = (): void => {
+    if (coordinator !== 'observing' || stopping || closed) return;
+    coordinator = 'cutting_over';
+    cutoverDeadline = performance.now() + CAPTURE_CUTOVER_MS;
+    recordRunnerEvent(
+      seams.runnerLog,
+      `capture_cutover_started ${cutoverDeadline - CAPTURE_CUTOVER_MS}`,
+    );
+    cutoverTimer = setTimeout(
+      () => void freezeAndPublish(),
+      CAPTURE_CUTOVER_MS,
+    );
+    if (seams.raceCoordinator) {
+      setImmediate(beginCutover);
+      setImmediate(beginCutover);
+    }
+  };
+
+  const beginBudget = (): void => {
+    if (budget !== undefined || stopping || coordinator !== 'observing') return;
+    budget = setTimeout(beginCutover, 7_000);
+  };
+
   try {
     await store.claimRunner(parsed.owner, parsed.job, claimId, runnerToken);
     record = await store.getJob(parsed.owner, parsed.job);
@@ -226,8 +483,11 @@ async function run(): Promise<void> {
     );
     // Internal fixture-only controls are explicitly allowlisted at this boundary;
     // all other pi-watch variables remain excluded from guardian and shell env.
-    if (seams.guardianMode !== undefined)
+    if (seams.guardianMode !== undefined) {
       guardianEnv.PI_WATCH_TEST_GUARDIAN_MODE = seams.guardianMode;
+      if (seams.guardianMode === 'withhold-all-and-hold')
+        guardianEnv.PI_WATCH_INTERNAL_TEST_SEAMS = '1';
+    }
     if (seams.guardianLog !== undefined)
       guardianEnv.PI_WATCH_TEST_GUARDIAN_LOG = seams.guardianLog;
     guardian = spawn(process.execPath, [guardianEntry, '--job', parsed.job], {
@@ -237,70 +497,17 @@ async function run(): Promise<void> {
     });
     guardian.unref();
     // SAFETY: slots 4 and 5 are the two Readable pipes requested in spawn stdio.
-    const streamsForDrain =
+    const streams =
       guardian.stdio as unknown as Array<NodeJS.ReadableStream | null>;
-    stdout = streamsForDrain[4] ?? null;
-    stderr = streamsForDrain[5] ?? null;
-    stdout?.on('data', () => undefined);
-    stderr?.on('data', () => undefined);
+    stdout = streams[4] ?? null;
+    stderr = streams[5] ?? null;
     let ready = false;
     let topology = false;
     readinessTimer = setTimeout(() => {
       if (topologySucceeded || stopping) return;
       void publishSpawnFailure();
     }, 3_000);
-    guardian.on('message', (raw: unknown) => {
-      if (stopping || !isGuardianMessage(raw)) return;
-      const message = raw as GuardianMessage;
-      if (message.type === 'hello') {
-        guardian?.send({
-          type: 'hello_reply',
-          runnerPid: process.pid,
-          command: record.command,
-          cwd: record.cwd,
-          deadlineAtMs: record.deadlineAtMs,
-          psPath: utilities.ps,
-          shPath: utilities.sh,
-        });
-      } else if (message.type === 'topology') {
-        topology = message.ok;
-        if (!topology) {
-          void publishSpawnFailure();
-        } else {
-          topologySucceeded = true;
-          ready = true;
-          void decide();
-        }
-      } else if (message.type === 'shell_spawned') {
-        launched = true;
-        void publish(
-          {
-            launch: 'launched',
-            cleanupState: 'not_requested',
-            stdout: streams,
-            stderr: streams,
-            finalized: false,
-          },
-          false,
-        );
-      } else if (message.type === 'shell_error') {
-        if (message.reason === 'expired_before_spawn') deadlineObserved = true;
-        void publishSpawnFailure();
-      } else if (message.type === 'shell_exit') {
-        // A shell outcome without the shell-spawn receipt is ambiguous by
-        // contract (the guardian fixture can intentionally withhold it).
-        if (launched) {
-          shellCode = message.code;
-          shellSignal = message.signal;
-        }
-        beginBudget();
-      } else if (message.type === 'cleanup_term') term = message.observation;
-      else if (message.type === 'cleanup_kill_intent') killIntent = true;
-      else if (message.type === 'deadline') {
-        deadlineObserved = true;
-        beginBudget();
-      }
-    });
+
     const decide = async (): Promise<void> => {
       if (!ready || !topology || grantSent || stopping) return;
       waitAtSeam(seams.pauseBeforeDecide);
@@ -329,6 +536,7 @@ async function run(): Promise<void> {
         await abandon();
         return;
       }
+      prepareCapture();
       waitAtSeam(
         seams.pauseAfterAuthorized || seams.pauseAfterAuthorizedMs > 0,
         seams.pauseAfterAuthorizedMs || undefined,
@@ -341,29 +549,74 @@ async function run(): Promise<void> {
         guardian.send({ type: 'grant' }, (error) => {
           if (error === null || error === undefined || stopping) return;
           recordRunnerEvent(seams.runnerLog, 'grant_send_callback_error');
-          void finalize().finally(() => void close());
+          beginCutover();
         });
       } catch {
-        void finalize().finally(() => void close());
+        beginCutover();
       }
     };
+
+    guardian.on('message', (raw: unknown) => {
+      if (stopping || !isGuardianMessage(raw)) return;
+      const message = raw as GuardianMessage;
+      if (message.type === 'hello') {
+        guardian?.send({
+          type: 'hello_reply',
+          runnerPid: process.pid,
+          command: record.command,
+          cwd: record.cwd,
+          deadlineAtMs: record.deadlineAtMs,
+          psPath: utilities.ps,
+          shPath: utilities.sh,
+        });
+      } else if (message.type === 'topology') {
+        topology = message.ok;
+        if (!topology) void publishSpawnFailure();
+        else {
+          topologySucceeded = true;
+          ready = true;
+          void decide();
+        }
+      } else if (message.type === 'shell_spawned') {
+        launched = true;
+        recordRunnerEvent(seams.runnerLog, `shell_pid ${message.pid}`);
+        void publish(
+          {
+            launch: 'launched',
+            cleanupState: 'not_requested',
+            finalized: false,
+          },
+          false,
+        );
+      } else if (message.type === 'shell_error') {
+        if (message.reason === 'expired_before_spawn') deadlineObserved = true;
+        void publishSpawnFailure();
+      } else if (message.type === 'shell_exit') {
+        // A shell outcome without the shell-spawn receipt remains unknown.
+        if (launched) {
+          shellCode = message.code;
+          shellSignal = message.signal;
+        }
+        beginBudget();
+      } else if (message.type === 'cleanup_term') term = message.observation;
+      else if (message.type === 'cleanup_kill_intent') killIntent = true;
+      else if (message.type === 'deadline') {
+        deadlineObserved = true;
+        beginBudget();
+      }
+    });
+
     deadlineTimer = setTimeout(
       () => {
-        if (stopping) return;
-        beginBudget();
+        if (!stopping) beginBudget();
       },
       Math.max(0, record.deadlineAtMs - Date.now()),
     );
     const handleGuardianLoss = (): void => {
       if (stopping) return;
-      if (!topologySucceeded) {
-        void publishSpawnFailure();
-      } else if (grantAttempted) {
-        beginBudget();
-        void finalize().finally(() => void close());
-      } else {
-        void abandon();
-      }
+      if (!topologySucceeded) void publishSpawnFailure();
+      else if (grantAttempted) beginCutover();
+      else void abandon();
     };
     guardian.once('disconnect', () => {
       if (!seams.disconnectBeforeGrantSend) handleGuardianLoss();
@@ -379,7 +632,7 @@ async function run(): Promise<void> {
         void abandon();
         return;
       }
-      void finalize().finally(() => void close());
+      beginCutover();
     });
   } catch {
     await close();

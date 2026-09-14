@@ -30,16 +30,8 @@
  * facts are representable through the primitives here (store-evidence.ts).
  */
 import { createHash, randomBytes } from 'node:crypto';
-import {
-  chmodSync,
-  closeSync,
-  fchmodSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  realpathSync,
-} from 'node:fs';
-import { isAbsolute, resolve as resolvePath, sep } from 'node:path';
+import { chmodSync, closeSync, fchmodSync, lstatSync, openSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
   AmbiguousAcceptanceError,
@@ -51,6 +43,7 @@ import {
   validateDeadlineMs,
   validateRequestKey,
 } from './job-types.ts';
+import { prepareDatabasePath } from './private-path.ts';
 import {
   type EvidenceInput,
   type ExecutionEvidence,
@@ -523,148 +516,6 @@ function validateNamespace(namespace: unknown): RequestNamespace {
  * are created one level at a time with mode 0700. Pre-existing descendants
  * must already be private; they are rejected rather than chmod-ed.
  */
-function strictDescendantParts(path: string, root: string): string[] | null {
-  if (path === root) return null;
-  if (root === sep) {
-    return path.startsWith(sep) ? path.slice(sep.length).split(sep) : null;
-  }
-  const prefix = root + sep;
-  return path.startsWith(prefix) ? path.slice(prefix.length).split(sep) : null;
-}
-
-function appendPath(root: string, parts: string[]): string {
-  return root === sep ? sep + parts.join(sep) : root + sep + parts.join(sep);
-}
-
-function prepareDatabasePath(dbPath: string, trustedRoot: string): string {
-  if (!isAbsolute(dbPath) || !isWellFormedNonEmpty(dbPath)) {
-    throw new StoreError(
-      'PATH_UNSAFE',
-      'Store path must be absolute and well-formed.',
-    );
-  }
-  if (
-    typeof trustedRoot !== 'string' ||
-    !isAbsolute(trustedRoot) ||
-    !isWellFormedNonEmpty(trustedRoot)
-  ) {
-    throw new StoreError(
-      'PATH_UNSAFE',
-      'Trusted root must be an absolute, well-formed path.',
-    );
-  }
-  let rootReal: string;
-  try {
-    // Canonicalize ONLY the authorized root; descendants are never resolved
-    // through realpath (that would bypass symlink rejection).
-    rootReal = realpathSync(trustedRoot);
-  } catch {
-    throw new StoreError(
-      'PATH_UNSAFE',
-      'Trusted root must exist and be accessible.',
-    );
-  }
-  if (!lstatSync(rootReal).isDirectory()) {
-    throw new StoreError('PATH_UNSAFE', 'Trusted root is not a directory.');
-  }
-  const resolved = resolvePath(dbPath);
-  // Prefer supplied-root containment so an alias such as real/alias -> real
-  // maps `real/alias/watch` to `real/watch`. Otherwise accept the canonical
-  // root spelling. Both checks are lexical and separator-safe; descendants
-  // are never realpathed or used to launder links.
-  const rootSupplied = resolvePath(trustedRoot);
-  const parts =
-    strictDescendantParts(resolved, rootSupplied) ??
-    strictDescendantParts(resolved, rootReal);
-  if (parts === null) {
-    throw new StoreError(
-      'PATH_UNSAFE',
-      'Store path must be strictly inside the trusted root.',
-    );
-  }
-  // Always transport the canonical spelling to SQLite and sidecar handling.
-  const canonicalResolved = appendPath(rootReal, parts);
-  // Directory components between the root and the file: checked and created
-  // one level at a time so no unchecked ancestor is ever descended into.
-  let current = rootReal;
-  for (const part of parts.slice(0, -1)) {
-    current = appendPath(current, [part]);
-    let componentStat: import('node:fs').Stats;
-    try {
-      componentStat = lstatSync(current);
-    } catch (error) {
-      const enoent =
-        typeof error === 'object' &&
-        error !== null &&
-        'code' in error &&
-        error.code === 'ENOENT';
-      if (!enoent) {
-        throw new StoreError(
-          'PATH_UNSAFE',
-          'Store path component is not accessible.',
-        );
-      }
-      // One level at a time, 0700. Explicitly restore the private mode after
-      // creation so an unusually restrictive umask cannot weaken the result.
-      try {
-        mkdirSync(current, { recursive: false, mode: 0o700 });
-        chmodSync(current, 0o700);
-        componentStat = lstatSync(current);
-      } catch (mkdirError) {
-        const eexist =
-          typeof mkdirError === 'object' &&
-          mkdirError !== null &&
-          'code' in mkdirError &&
-          mkdirError.code === 'EEXIST';
-        if (!eexist) {
-          throw new StoreError(
-            'PATH_UNSAFE',
-            'Store path component is not accessible.',
-          );
-        }
-        // Lost a concurrent-creation race: re-lstat and type-check what the
-        // other process created instead of blindly ignoring EEXIST.
-        try {
-          componentStat = lstatSync(current);
-        } catch {
-          throw new StoreError(
-            'PATH_UNSAFE',
-            'Store path component is not accessible.',
-          );
-        }
-      }
-    }
-    if (
-      componentStat.isSymbolicLink() ||
-      !componentStat.isDirectory() ||
-      (Number(componentStat.mode) & 0o7777) !== 0o700
-    ) {
-      throw new StoreError('PATH_UNSAFE', 'Store path component is unsafe.');
-    }
-  }
-  let fileStat: import('node:fs').Stats | null;
-  try {
-    fileStat = lstatSync(canonicalResolved);
-  } catch (error) {
-    const enoent =
-      typeof error === 'object' &&
-      error !== null &&
-      'code' in error &&
-      error.code === 'ENOENT';
-    if (!enoent) {
-      throw new StoreError(
-        'PATH_UNSAFE',
-        'Store database path is not accessible.',
-      );
-    }
-    fileStat = null;
-  }
-  if (fileStat && (fileStat.isSymbolicLink() || !fileStat.isFile())) {
-    throw new StoreError('PATH_UNSAFE', 'Store database path is unsafe.');
-  }
-  return canonicalResolved;
-}
-
 function ensurePrivateDatabaseFile(resolved: string): boolean {
   let descriptor = -1;
   let operationError: unknown;
@@ -1574,6 +1425,18 @@ export function createJobStore(
               cleanupState: 'not_required',
               cancellationIntentObserved: suppressed === 'suppressed_cancelled',
               deadlineTriggerObserved: suppressed === 'suppressed_deadline',
+              stdout: {
+                available: false,
+                truncated: false,
+                incomplete: false,
+                openAtCutover: false,
+              },
+              stderr: {
+                available: false,
+                truncated: false,
+                incomplete: false,
+                openAtCutover: false,
+              },
               finalized: true,
             },
             { uncertain: false, finalized: true },

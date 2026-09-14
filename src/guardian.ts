@@ -29,7 +29,8 @@ let readinessTimer: NodeJS.Timeout | undefined;
 let activeProbe: ProcessGroupProbe | undefined;
 let helloReply: Extract<GuardianMessage, { type: 'hello_reply' }> | undefined;
 let shellExited = false;
-const seams = internalSeams();
+// The runner applies the master test gate before forwarding guardian modes.
+const seams = internalSeams(process.env, true);
 const fixtureMode = seams.guardianMode ?? '';
 const fixtureLog = seams.guardianLog;
 function fixtureEvent(event: string): void {
@@ -66,6 +67,23 @@ function closeOutputDescriptors(): void {
 function violation(): void {
   sendGuardianMessage({ type: 'protocol_violation', state });
 }
+function scheduleCleanupKill(killDeadline: number): void {
+  const remaining = killDeadline - monotonicNow();
+  deadlineTimer = setTimeout(
+    () => {
+      if (killDeadline > monotonicNow()) {
+        scheduleCleanupKill(killDeadline);
+        return;
+      }
+      // KILL intent is sent before own-group KILL because the signal includes this guardian.
+      fixtureEvent('kill_intent');
+      sendGuardianMessage({ type: 'cleanup_kill_intent' });
+      attemptOwnGroupSignal('SIGKILL');
+      stop(0);
+    },
+    Math.max(0, remaining),
+  );
+}
 function cleanup(deadline = false): void {
   if (cleanupStarted || state === 'refused' || state === 'exited') return;
   cleanupStarted = true;
@@ -78,16 +96,9 @@ function cleanup(deadline = false): void {
   const observation = attemptOwnGroupSignal('SIGTERM');
   fixtureEvent(`term_${observation}`);
   sendGuardianMessage({ type: 'cleanup_term', observation });
-  // The grace begins after the TERM attempt returns, measured by the
-  // monotonic timer itself; do not subtract pre-timer bookkeeping time.
-  const grace = 5_000;
-  setTimeout(() => {
-    // KILL intent is sent before own-group KILL because the signal includes this guardian.
-    fixtureEvent('kill_intent');
-    sendGuardianMessage({ type: 'cleanup_kill_intent' });
-    attemptOwnGroupSignal('SIGKILL');
-    stop(0);
-  }, grace);
+  // The grace begins after the TERM attempt returns, measured against an
+  // absolute monotonic deadline so an early timer cannot shorten it.
+  scheduleCleanupKill(monotonicNow() + 5_000);
 }
 process.on('SIGTERM', () => {
   if (state === 'granted' || state === 'shell_spawned' || state === 'cleaning')
@@ -150,7 +161,9 @@ function handleGrant(): void {
     stop(1);
     return;
   }
-  deadlineTimer = setTimeout(() => cleanup(true), delay);
+  deadlineTimer = setTimeout(() => {
+    if (fixtureMode !== 'withhold-all-and-hold') cleanup(true);
+  }, delay);
   try {
     shell = spawn(reply.shPath, ['-c', reply.command], {
       cwd: reply.cwd,
@@ -195,10 +208,17 @@ function handleGrant(): void {
   });
   shell.once('exit', (code, signal) => {
     shellExited = true;
-    if (fixtureMode !== 'withhold-exit') {
+    if (
+      fixtureMode !== 'withhold-exit' &&
+      fixtureMode !== 'withhold-all-and-hold'
+    ) {
       fixtureEvent('shell_exit_receipt');
       sendGuardianMessage({ type: 'shell_exit', code, signal });
-      cleanup(false);
+      if (fixtureMode === 'disconnect-after-exit') {
+        setImmediate(() => process.disconnect?.());
+      } else {
+        cleanup(false);
+      }
     }
   });
 }
@@ -214,7 +234,8 @@ if (typeof process.send !== 'function' || !process.connected) {
   }, 2_000);
   process.on('disconnect', () => {
     const handleDisconnect = (): void => {
-      if (state === 'shell_spawned' || state === 'granted') cleanup(false);
+      if (fixtureMode === 'disconnect-after-exit' && shellExited) stop(0);
+      else if (state === 'shell_spawned' || state === 'granted') cleanup(false);
       else if (state !== 'exited') stop(1);
     };
     if (fixtureMode === 'delay-disconnect') setTimeout(handleDisconnect, 1_000);
